@@ -8,7 +8,7 @@ msgstr ""
 "Language: nl\n"
 "Project-Id-Version: documenso-app\n"
 "Report-Msgid-Bugs-To: \n"
-"PO-Revision-Date: 2026-06-03 06:16\n"
+"PO-Revision-Date: 2026-06-05 13:00\n"
 "Last-Translator: \n"
 "Language-Team: Dutch\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
@@ -403,6 +403,10 @@ msgstr "{MAXIMUM_PASSKEYS, plural, one {U kunt niet meer dan # passkey hebben.} 
 msgid "{maximumEnvelopeItemCount, plural, one {You cannot upload more than # item per envelope.} other {You cannot upload more than # items per envelope.}}"
 msgstr "{maximumEnvelopeItemCount, plural, one {Je kunt niet meer dan # item per envelop uploaden.} other {Je kunt niet meer dan # items per envelop uploaden.}}"
 
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "{organisationClaimCount, plural, one {# Organisation claim} other {# Organisation claims}}"
+msgstr "{organisationClaimCount, plural, one {# organisatieclaim} other {# organisatieclaims}}"
+
 #: apps/remix/app/components/general/direct-template/direct-template-page.tsx
 msgid "{recipientActionVerb} document"
 msgstr "{recipientActionVerb} document"
@@ -453,6 +457,10 @@ msgstr "{selectedCount} geselecteerd"
 #: packages/email/template-components/template-document-rejected.tsx
 msgid "{signerName} has rejected the document \"{documentName}\"."
 msgstr "{signerName} heeft het document \"{documentName}\" geweigerd."
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "{subscriptionClaimCount, plural, one {# Subscription claim} other {# Subscription claims}}"
+msgstr "{subscriptionClaimCount, plural, one {# abonnementclaim} other {# abonnementclaims}}"
 
 #. placeholder {0}: _(actionVerb).toLowerCase()
 #: packages/email/template-components/template-document-invite.tsx
@@ -1141,6 +1149,7 @@ msgstr "Actie"
 #: apps/remix/app/components/general/envelope-signing/envelope-signer-header.tsx
 #: apps/remix/app/components/general/template/template-page-view-documents-table.tsx
 #: apps/remix/app/components/tables/admin-claims-table.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/admin-organisations-table.tsx
 #: apps/remix/app/components/tables/documents-table.tsx
 #: apps/remix/app/components/tables/inbox-table.tsx
@@ -1281,6 +1290,10 @@ msgstr "E-mailadres toevoegen"
 msgid "Add Email Domain"
 msgstr "E-maildomein toevoegen"
 
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+msgid "Add Email Transport"
+msgstr "E-mailtransport toevoegen"
+
 #: apps/remix/app/components/dialogs/ai-field-detection-dialog.tsx
 msgid "Add fields"
 msgstr "Velden toevoegen"
@@ -1409,6 +1422,10 @@ msgstr "Voeg deze DNS-records toe om je domeineigendom te verifiëren"
 #: apps/remix/app/routes/_authenticated+/o.$orgUrl.settings.sso.tsx
 msgid "Add this URL to your provider's allowed redirect URIs"
 msgstr "Voeg deze URL toe aan de toegestane redirect-URI's van je provider"
+
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+msgid "Add transport"
+msgstr "Transport toevoegen"
 
 #: apps/remix/app/components/forms/branding-preferences-form.tsx
 msgid "Additional brand information to display at the bottom of emails"
@@ -1944,6 +1961,11 @@ msgstr "Elke status"
 msgid "API"
 msgstr "API"
 
+#: apps/remix/app/components/forms/email-transport-form.tsx
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "API key"
+msgstr "API-sleutel"
+
 #: apps/remix/app/components/general/claim-limit-fields.tsx
 msgid "API rate limits"
 msgstr "API-snelheidslimieten"
@@ -2020,6 +2042,10 @@ msgstr "Weet je zeker dat je het document wilt voltooien? Deze actie kan niet on
 #: apps/remix/app/components/dialogs/claim-delete-dialog.tsx
 msgid "Are you sure you want to delete the following claim?"
 msgstr "Weet je zeker dat je de volgende claim wilt verwijderen?"
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "Are you sure you want to delete the following transport?"
+msgstr "Weet u zeker dat u het volgende transport wilt verwijderen?"
 
 #: apps/remix/app/components/dialogs/folder-delete-dialog.tsx
 msgid "Are you sure you want to delete this folder?"
@@ -2225,6 +2251,10 @@ msgstr "Achtergrondkleur"
 #: apps/remix/app/components/tables/admin-document-jobs-table.tsx
 msgid "Background Jobs"
 msgstr "Achtergrondtaken"
+
+#: apps/remix/app/components/dialogs/claim-update-dialog.tsx
+msgid "Backport email transport"
+msgstr "E-mailtransport backporten"
 
 #: apps/remix/app/components/forms/2fa/disable-authenticator-app-dialog.tsx
 #: apps/remix/app/components/forms/signin.tsx
@@ -2447,6 +2477,10 @@ msgstr "Kunt u niemand vinden?"
 #: apps/remix/app/components/dialogs/claim-update-dialog.tsx
 #: apps/remix/app/components/dialogs/document-move-to-folder-dialog.tsx
 #: apps/remix/app/components/dialogs/document-resend-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-distribute-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-duplicate-dialog.tsx
@@ -3144,6 +3178,7 @@ msgstr "Teller opnieuw ingesteld."
 
 #: apps/remix/app/components/dialogs/admin-organisation-create-dialog.tsx
 #: apps/remix/app/components/dialogs/admin-user-create-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
 #: apps/remix/app/components/dialogs/folder-create-dialog.tsx
 #: apps/remix/app/components/dialogs/organisation-create-dialog.tsx
 #: apps/remix/app/components/dialogs/organisation-group-create-dialog.tsx
@@ -3355,6 +3390,7 @@ msgstr "Maak je account aan en begin met het gebruik van moderne documentenonder
 #: apps/remix/app/components/general/document/document-page-view-information.tsx
 #: apps/remix/app/components/general/template/template-page-view-documents-table.tsx
 #: apps/remix/app/components/general/template/template-page-view-information.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/admin-organisation-overview-table.tsx
 #: apps/remix/app/components/tables/documents-table.tsx
 #: apps/remix/app/components/tables/inbox-table.tsx
@@ -3523,6 +3559,13 @@ msgstr "David is de werknemer, Lucas is de manager"
 msgid "Decline"
 msgstr "Weigeren"
 
+#: apps/remix/app/components/forms/subscription-claim-form.tsx
+#: apps/remix/app/components/forms/subscription-claim-form.tsx
+#: apps/remix/app/routes/_authenticated+/admin+/organisations.$id.tsx
+#: apps/remix/app/routes/_authenticated+/admin+/organisations.$id.tsx
+msgid "Default (system mailer)"
+msgstr "Standaard (systeemmailer)"
+
 #: apps/remix/app/components/forms/branding-preferences-form.tsx
 msgid "Default border colour."
 msgstr "Standaardrandkleur."
@@ -3609,6 +3652,7 @@ msgstr "verwijderen"
 #: apps/remix/app/components/dialogs/admin-organisation-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/admin-organisation-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/claim-delete-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-item-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/envelopes-bulk-delete-dialog.tsx
@@ -3628,6 +3672,7 @@ msgstr "verwijderen"
 #: apps/remix/app/components/general/document/document-page-view-dropdown.tsx
 #: apps/remix/app/components/general/folder/folder-card.tsx
 #: apps/remix/app/components/tables/admin-claims-table.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/documents-table-action-dropdown.tsx
 #: apps/remix/app/components/tables/envelopes-table-bulk-action-bar.tsx
 #: apps/remix/app/components/tables/organisation-email-domains-table.tsx
@@ -3704,6 +3749,10 @@ msgstr "E-maildomein verwijderen"
 #: apps/remix/app/routes/_authenticated+/o.$orgUrl.settings.email-domains.$id.tsx
 msgid "Delete Email Domain"
 msgstr "E-maildomein verwijderen"
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "Delete Email Transport"
+msgstr "E-mailtransport verwijderen"
 
 #: apps/remix/app/components/general/envelope-editor/envelope-editor.tsx
 msgid "Delete Envelope"
@@ -4637,10 +4686,15 @@ msgstr "Bijv. 0"
 msgid "E.g. 100"
 msgstr "Bijv. 100"
 
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "e.g. Resend (free plans)"
+msgstr "bijv. Resend (gratis abonnementen)"
+
 #: apps/remix/app/components/general/document/document-page-view-button.tsx
 #: apps/remix/app/components/general/document/document-page-view-dropdown.tsx
 #: apps/remix/app/components/general/teams/team-email-dropdown.tsx
 #: apps/remix/app/components/tables/admin-dashboard-users-table.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/documents-table-action-button.tsx
 #: apps/remix/app/components/tables/documents-table-action-dropdown.tsx
 #: apps/remix/app/components/tables/settings-security-passkey-table-actions.tsx
@@ -4649,6 +4703,10 @@ msgstr "Bijv. 100"
 #: apps/remix/app/routes/_authenticated+/t.$teamUrl+/settings.webhooks.$id._index.tsx
 msgid "Edit"
 msgstr "Bewerken"
+
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
+msgid "Edit Email Transport"
+msgstr "E-mailtransport bewerken"
 
 #: apps/remix/app/components/dialogs/envelope-item-edit-dialog.tsx
 msgid "Edit Item"
@@ -4682,6 +4740,7 @@ msgstr "Kennisgeving elektronische handtekening"
 #: apps/remix/app/components/dialogs/admin-user-create-dialog.tsx
 #: apps/remix/app/components/dialogs/ai-field-detection-dialog.tsx
 #: apps/remix/app/components/dialogs/assistant-confirmation-dialog.tsx
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-distribute-dialog.tsx
 #: apps/remix/app/components/dialogs/team-email-add-dialog.tsx
 #: apps/remix/app/components/dialogs/team-email-update-dialog.tsx
@@ -4882,6 +4941,16 @@ msgstr "E-mail de eigenaar wanneer het document is voltooid"
 msgid "Email the signer if the document is still pending"
 msgstr "E-mail de ondertekenaar als het document nog in behandeling is"
 
+#: apps/remix/app/components/forms/subscription-claim-form.tsx
+#: apps/remix/app/routes/_authenticated+/admin+/organisations.$id.tsx
+msgid "Email transport"
+msgstr "E-mailtransport"
+
+#: apps/remix/app/routes/_authenticated+/admin+/_layout.tsx
+#: apps/remix/app/routes/_authenticated+/admin+/email-transports._index.tsx
+msgid "Email Transports"
+msgstr "E-mailtransports"
+
 #: apps/remix/app/components/general/document-signing/access-auth-2fa-form.tsx
 msgid "Email verification"
 msgstr "E-mailverificatie"
@@ -5015,6 +5084,10 @@ msgstr "Bijgevoegd document"
 #: packages/lib/server-only/pdf/render-audit-logs.ts
 msgid "Enclosed Documents"
 msgstr "Bijgevoegde documenten"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Endpoint (optional)"
+msgstr "Endpoint (optioneel)"
 
 #: packages/lib/constants/i18n.ts
 msgid "English"
@@ -5371,6 +5444,10 @@ msgstr "Abonnementsclaim aanmaken mislukt."
 msgid "Failed to create support ticket"
 msgstr "Supportticket aanmaken mislukt"
 
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+msgid "Failed to create transport."
+msgstr "Transport aanmaken is mislukt."
+
 #: apps/remix/app/components/dialogs/folder-delete-dialog.tsx
 msgid "Failed to delete folder"
 msgstr "Map verwijderen mislukt"
@@ -5378,6 +5455,10 @@ msgstr "Map verwijderen mislukt"
 #: apps/remix/app/components/dialogs/claim-delete-dialog.tsx
 msgid "Failed to delete subscription claim."
 msgstr "Abonnementsclaim verwijderen mislukt."
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "Failed to delete transport."
+msgstr "Transport verwijderen is mislukt."
 
 #: apps/remix/app/routes/_authenticated+/admin+/documents.$id.tsx
 msgid "Failed to download audit logs. Please try again later."
@@ -5418,6 +5499,10 @@ msgstr "Sessies intrekken mislukt"
 #: packages/ui/primitives/document-flow/field-item-advanced-settings.tsx
 msgid "Failed to save settings."
 msgstr "Instellingen opslaan is mislukt."
+
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
+msgid "Failed to save transport."
+msgstr "Transport opslaan is mislukt."
 
 #: apps/remix/app/components/dialogs/session-logout-all-dialog.tsx
 msgid "Failed to sign out all sessions"
@@ -5561,6 +5646,10 @@ msgstr "Bestand is te klein"
 msgid "File size exceeds the limit of {APP_DOCUMENT_UPLOAD_SIZE_LIMIT} MB"
 msgstr "Bestandsgrootte overschrijdt de limiet van {APP_DOCUMENT_UPLOAD_SIZE_LIMIT} MB"
 
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+msgid "Fill in the details to create a new email transport."
+msgstr "Vul de details in om een nieuw e-mailtransport aan te maken."
+
 #: apps/remix/app/components/dialogs/claim-create-dialog.tsx
 msgid "Fill in the details to create a new subscription claim."
 msgstr "Vul de gegevens in om een nieuwe abonnementsclaim aan te maken."
@@ -5676,6 +5765,18 @@ msgstr "Gratis handtekening-instellingen"
 #: packages/lib/constants/i18n.ts
 msgid "French"
 msgstr "Frans"
+
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
+msgid "From"
+msgstr "Van"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "From address"
+msgstr "Van-adres"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "From name"
+msgstr "Van-naam"
 
 #: apps/remix/app/components/embed/embed-direct-template-client-page.tsx
 #: apps/remix/app/components/embed/embed-document-signing-page-v1.tsx
@@ -5949,6 +6050,10 @@ msgstr "Home (geen map)"
 #: packages/ui/primitives/document-flow/field-items-advanced-settings/checkbox-field.tsx
 msgid "Horizontal"
 msgstr "Horizontaal"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Host"
+msgstr "Host"
 
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-settings-dialog.tsx
 msgid "How long recipients have to complete this document after it is sent. Uses the team default when set to inherit."
@@ -6459,6 +6564,10 @@ msgstr "Verlaten"
 msgid "Leave blank to inherit from the organisation."
 msgstr "Laat leeg om over te nemen van de organisatie."
 
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Leave blank to keep current"
+msgstr "Laat leeg om de huidige te behouden"
+
 #: apps/remix/app/components/dialogs/organisation-leave-dialog.tsx
 msgid "Leave organisation"
 msgstr "Organisatie verlaten"
@@ -6624,6 +6733,10 @@ msgstr "Profiel van {0} beheren"
 #: apps/remix/app/routes/_authenticated+/o.$orgUrl.settings.sso.tsx
 msgid "Manage a custom SSO login portal for your organisation."
 msgstr "Beheer een aangepast SSO-inlogportaal voor uw organisatie."
+
+#: apps/remix/app/routes/_authenticated+/admin+/email-transports._index.tsx
+msgid "Manage all email transports"
+msgstr "Alle e-mailtransports beheren"
 
 #: apps/remix/app/routes/_authenticated+/settings+/organisations.tsx
 msgid "Manage all organisations you are currently associated with."
@@ -6906,6 +7019,10 @@ msgstr "Ontbrekende ontvangers"
 msgid "Modify recipients"
 msgstr "Ontvangers wijzigen"
 
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
+msgid "Modify the details of the email transport."
+msgstr "Wijzig de details van het e-mailtransport."
+
 #: apps/remix/app/components/dialogs/claim-update-dialog.tsx
 msgid "Modify the details of the subscription claim."
 msgstr "Wijzig de details van de abonnementsclaim."
@@ -7008,6 +7125,7 @@ msgstr "n.v.t."
 #: apps/remix/app/components/dialogs/template-use-dialog.tsx
 #: apps/remix/app/components/embed/authoring/configure-document-recipients.tsx
 #: apps/remix/app/components/embed/authoring/configure-document-recipients.tsx
+#: apps/remix/app/components/forms/email-transport-form.tsx
 #: apps/remix/app/components/forms/subscription-claim-form.tsx
 #: apps/remix/app/components/general/claim-account.tsx
 #: apps/remix/app/components/general/document-signing/document-signing-name-field.tsx
@@ -7017,6 +7135,7 @@ msgstr "n.v.t."
 #: apps/remix/app/components/tables/admin-dashboard-users-table.tsx
 #: apps/remix/app/components/tables/admin-document-jobs-table.tsx
 #: apps/remix/app/components/tables/admin-document-recipient-item-table.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/admin-organisation-overview-table.tsx
 #: apps/remix/app/components/tables/organisation-insights-table.tsx
 #: apps/remix/app/components/tables/settings-security-passkey-table-actions.tsx
@@ -7641,6 +7760,10 @@ msgstr "Organisaties"
 msgid "Organisations that the user is a member of."
 msgstr "Organisaties waarvan de gebruiker lid is."
 
+#: apps/remix/app/routes/_authenticated+/admin+/organisations.$id.tsx
+msgid "Organisations without a transport use the system default mailer."
+msgstr "Organisaties zonder transport gebruiken de standaard systeemmailer."
+
 #: apps/remix/app/components/general/folder/folder-card.tsx
 msgid "Organise your documents"
 msgstr "Organiseer je documenten"
@@ -7768,6 +7891,7 @@ msgstr "Met passkeys kun je inloggen en authenticeren met biometrie, wachtwoordb
 msgid "Passkeys are not supported on this browser"
 msgstr "Passkeys worden niet ondersteund in deze browser"
 
+#: apps/remix/app/components/forms/email-transport-form.tsx
 #: apps/remix/app/components/forms/reset-password.tsx
 #: apps/remix/app/components/forms/signin.tsx
 #: apps/remix/app/components/forms/signup.tsx
@@ -7930,6 +8054,10 @@ msgstr "Plaats en configureer formuliervelden in het document"
 #: packages/ui/primitives/document-flow/field-items-advanced-settings/text-field.tsx
 msgid "Placeholder"
 msgstr "Placeholder"
+
+#: apps/remix/app/components/forms/subscription-claim-form.tsx
+msgid "Plans without a transport use the system default mailer."
+msgstr "Abonnementen zonder transport gebruiken de standaard systeemmailer."
 
 #. placeholder {0}: _(actionVerb).toLowerCase()
 #: packages/email/template-components/template-document-invite.tsx
@@ -8153,6 +8281,10 @@ msgstr "Upload een logo"
 #: packages/lib/constants/i18n.ts
 msgid "Polish"
 msgstr "Pools"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Port"
+msgstr "Poort"
 
 #: packages/lib/constants/i18n.ts
 msgid "Portuguese (Brazil)"
@@ -9045,6 +9177,10 @@ msgstr "Opslaan"
 msgid "Save as Template"
 msgstr "Opslaan als sjabloon"
 
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
+msgid "Save changes"
+msgstr "Wijzigingen opslaan"
+
 #: packages/lib/client-only/providers/envelope-editor-provider.tsx
 #: packages/lib/client-only/providers/envelope-editor-provider.tsx
 #: packages/lib/client-only/providers/envelope-editor-provider.tsx
@@ -9096,6 +9232,10 @@ msgstr "Zoek op ID"
 #: apps/remix/app/components/tables/admin-dashboard-users-table.tsx
 msgid "Search by name or email"
 msgstr "Zoeken op naam of e‑mail"
+
+#: apps/remix/app/routes/_authenticated+/admin+/email-transports._index.tsx
+msgid "Search by name or from address"
+msgstr "Zoek op naam of van-adres"
 
 #: apps/remix/app/routes/_authenticated+/admin+/organisations._index.tsx
 msgid "Search by organisation ID, name, customer ID or owner email"
@@ -9371,6 +9511,7 @@ msgstr "Geselecteerde templates worden permanent verwijderd"
 msgid "Selector"
 msgstr "Selector"
 
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
 #: apps/remix/app/components/dialogs/envelope-distribute-dialog.tsx
 #: apps/remix/app/components/dialogs/webhook-test-dialog.tsx
 #: packages/ui/primitives/document-flow/add-subject.tsx
@@ -9379,6 +9520,10 @@ msgstr "Selector"
 #: packages/ui/primitives/document-flow/send-document-action-dialog.tsx
 msgid "Send"
 msgstr "Verzenden"
+
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+msgid "Send a test email using this transport to verify the configuration."
+msgstr "Stuur een testmail met dit transport om de configuratie te verifiëren."
 
 #: apps/remix/app/components/dialogs/webhook-test-dialog.tsx
 msgid "Send a test webhook with sample data to verify your integration is working correctly."
@@ -9435,6 +9580,14 @@ msgstr "Stuur herinneringen naar de volgende ontvangers"
 #: apps/remix/app/routes/_authenticated+/admin+/documents.$id.tsx
 msgid "Send Status"
 msgstr "Verzendstatus"
+
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
+msgid "Send test"
+msgstr "Test verzenden"
+
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+msgid "Send Test Email"
+msgstr "Testmail verzenden"
 
 #: apps/remix/app/components/tables/documents-table.tsx
 #: apps/remix/app/components/tables/inbox-table.tsx
@@ -9546,13 +9699,17 @@ msgstr "Toon dagelijkse gemiddelden voor documenten, e-mails en API-gebruik"
 msgid "Show license key"
 msgstr "Licentiesleutel weergeven"
 
-#: apps/remix/app/routes/_authenticated+/admin+/organisation-stats._index.tsx
-msgid "Show quotas for documents, emails and API usages"
-msgstr "Toon quota voor documenten, e-mails en API-gebruik"
-
 #: apps/remix/app/routes/_authenticated+/t.$teamUrl+/settings.public-profile.tsx
 msgid "Show templates in your public profile for your audience to sign and get started quickly"
 msgstr "Toon sjablonen in je openbare profiel zodat je publiek snel kan ondertekenen en beginnen"
+
+#: apps/remix/app/routes/_authenticated+/admin+/organisation-stats._index.tsx
+msgid "Show usage"
+msgstr "Gebruik weergeven"
+
+#: apps/remix/app/routes/_authenticated+/admin+/organisation-stats._index.tsx
+msgid "Show usage with quotas"
+msgstr "Gebruik met quota weergeven"
 
 #: apps/remix/app/components/dialogs/sign-field-signature-dialog.tsx
 #: apps/remix/app/components/general/document-signing/document-signing-auth-2fa.tsx
@@ -10555,6 +10712,14 @@ msgstr "Templates gedeeltelijk verwijderd"
 msgid "Test"
 msgstr "Test"
 
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+msgid "Test email sent."
+msgstr "Testmail verzonden."
+
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+msgid "Test failed."
+msgstr "Test mislukt."
+
 #: apps/remix/app/components/dialogs/webhook-test-dialog.tsx
 msgid "Test Webhook"
 msgstr "Webhook testen"
@@ -10566,6 +10731,10 @@ msgstr "Testwebhook mislukt"
 #: apps/remix/app/components/dialogs/webhook-test-dialog.tsx
 msgid "Test webhook sent"
 msgstr "Testwebhook verzonden"
+
+#: apps/remix/app/components/dialogs/email-transport-send-test-dialog.tsx
+msgid "test@example.com"
+msgstr "test@example.com"
 
 #: apps/remix/app/components/dialogs/ai-field-detection-dialog.tsx
 #: apps/remix/app/components/general/document-signing/document-signing-text-field.tsx
@@ -11628,6 +11797,26 @@ msgstr "Totaal aantal gebruikers"
 msgid "Transfer documents to a different team"
 msgstr "Documenten overdragen naar een ander team"
 
+#: apps/remix/app/components/dialogs/email-transport-create-dialog.tsx
+msgid "Transport created."
+msgstr "Transport aangemaakt."
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "Transport deleted."
+msgstr "Transport verwijderd."
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Transport type"
+msgstr "Transporttype"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Transport type cannot be changed after creation."
+msgstr "Transporttype kan na het aanmaken niet meer worden gewijzigd."
+
+#: apps/remix/app/components/dialogs/email-transport-update-dialog.tsx
+msgid "Transport updated."
+msgstr "Transport bijgewerkt."
+
 #: apps/remix/app/components/dialogs/webhook-create-dialog.tsx
 #: apps/remix/app/components/dialogs/webhook-edit-dialog.tsx
 msgid "Triggers"
@@ -11676,6 +11865,7 @@ msgid "Two-Factor Re-Authentication"
 msgstr "Twee‑factor‑herauthenticatie"
 
 #: apps/remix/app/components/tables/admin-document-recipient-item-table.tsx
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
 #: apps/remix/app/components/tables/templates-table.tsx
 msgid "Type"
 msgstr "Type"
@@ -12163,6 +12353,10 @@ msgstr "Gebruik uw authenticatie-app om een code te genereren"
 msgid "Use your passkey for authentication"
 msgstr "Gebruik je passkey voor authenticatie"
 
+#: apps/remix/app/components/tables/admin-email-transports-table.tsx
+msgid "Used by claims"
+msgstr "Gebruikt door claims"
+
 #: apps/remix/app/components/tables/admin-document-logs-table.tsx
 #: apps/remix/app/components/tables/document-logs-table.tsx
 #: apps/remix/app/components/tables/internal-audit-log-table.tsx
@@ -12210,6 +12404,10 @@ msgstr "Gebruikersprofielen zijn er!"
 #: apps/remix/app/components/general/menu-switcher.tsx
 msgid "User settings"
 msgstr "Gebruikersinstellingen"
+
+#: apps/remix/app/components/forms/email-transport-form.tsx
+msgid "Username"
+msgstr "Gebruikersnaam"
 
 #: apps/remix/app/components/tables/organisation-insights-table.tsx
 #: apps/remix/app/routes/_authenticated+/admin+/_layout.tsx
@@ -12505,6 +12703,10 @@ msgstr "Wil je ook van die strakke ondertekenlinks versturen zoals deze? <0>Beki
 #: apps/remix/app/routes/_profile+/_layout.tsx
 msgid "Want your own public profile?"
 msgstr "Wil je een eigen openbaar profiel?"
+
+#: apps/remix/app/components/dialogs/email-transport-delete-dialog.tsx
+msgid "Warning, this email transport is currently being used by:"
+msgstr "Waarschuwing, dit e-mailtransport wordt momenteel gebruikt door:"
 
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-recipient-form.tsx
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-recipient-form.tsx
