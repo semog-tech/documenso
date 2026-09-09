@@ -1,11 +1,14 @@
+import { getRequiredSignatureFontFamilies } from '@documenso/lib/client-only/hooks/load-signature-font';
 import { useAnalytics } from '@documenso/lib/client-only/hooks/use-analytics';
 import { usePageRenderer } from '@documenso/lib/client-only/hooks/use-page-renderer';
+import { useSignatureFont } from '@documenso/lib/client-only/hooks/use-signature-font';
 import {
   type PageRenderData,
   useCurrentEnvelopeRender,
 } from '@documenso/lib/client-only/providers/envelope-render-provider';
 import { useOptionalSession } from '@documenso/lib/client-only/providers/session';
 import { DIRECT_TEMPLATE_RECIPIENT_EMAIL } from '@documenso/lib/constants/direct-templates';
+import { getSignatureFontFamily } from '@documenso/lib/constants/pdf';
 import { isBase64Image } from '@documenso/lib/constants/signatures';
 import type { TRecipientActionAuth } from '@documenso/lib/types/document-auth';
 import type { TEnvelope } from '@documenso/lib/types/envelope';
@@ -22,6 +25,7 @@ import { extractInitials } from '@documenso/lib/utils/recipient-formatter';
 import type { TSignEnvelopeFieldValue } from '@documenso/trpc/server/envelope-router/sign-envelope-field.types';
 import { EnvelopeRecipientFieldTooltip } from '@documenso/ui/components/document/envelope-recipient-field-tooltip';
 import { EnvelopeFieldToolTip } from '@documenso/ui/components/field/envelope-field-tooltip';
+import { SignatureFontStatus } from '@documenso/ui/primitives/signature-pad/signature-font-status';
 import { useToast } from '@documenso/ui/primitives/use-toast';
 import { Trans, useLingui } from '@lingui/react/macro';
 import { type Field, FieldType, type Recipient, RecipientRole, type Signature, SigningStatus } from '@prisma/client';
@@ -74,6 +78,25 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
     isDirectTemplate,
   } = useRequiredEnvelopeSigningContext();
 
+  const signatureFonts = [
+    ...new Set(
+      [...envelopeData.recipient.fields, ...envelopeData.envelope.recipients.flatMap((recipient) => recipient.fields)]
+        .filter(
+          (field) =>
+            field.page === pageData.pageNumber &&
+            field.envelopeItemId === currentEnvelopeItem?.id &&
+            (field.type === FieldType.SIGNATURE || field.type === FieldType.FREE_SIGNATURE) &&
+            !field.signature?.signatureImageAsBase64,
+        )
+        .flatMap((field) => {
+          const text = field.signature?.typedSignature || getClientSideFieldTranslations(i18n)[field.type];
+          return getRequiredSignatureFontFamilies(getSignatureFontFamily(text), text);
+        }),
+    ),
+  ].join(', ');
+  const signatureFont = useSignatureFont(`18px ${signatureFonts}`, signatureFonts.length > 0);
+  const signatureFontsReady = signatureFonts.length === 0 || signatureFont.status === 'ready';
+
   // Note: We're using refs here due to the closure within the signField function.
   const fullName = useRef(fullNameState);
   const email = useRef(emailState);
@@ -93,6 +116,7 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
   const { stage, pageLayer, konvaContainer, unscaledViewport } = usePageRenderer(
     ({ stage, pageLayer }) => createPageCanvas(stage, pageLayer),
     pageData,
+    signatureFontsReady,
   );
 
   const { scale, pageNumber } = pageData;
@@ -610,6 +634,11 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
         />
       ))}
 
+      {!signatureFontsReady && (
+        <div className="absolute inset-x-0 top-0 z-20 bg-background">
+          <SignatureFontStatus status={signatureFont.status} retry={signatureFont.retry} />
+        </div>
+      )}
       {/* The element Konva will inject it's canvas into. */}
       <div className="konva-container absolute inset-0 z-10 w-full" ref={konvaContainer}></div>
     </>

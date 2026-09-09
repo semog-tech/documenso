@@ -1,9 +1,10 @@
+import { getRequiredSignatureFontFamilies } from '@documenso/lib/client-only/hooks/load-signature-font';
+import { useSignatureFont } from '@documenso/lib/client-only/hooks/use-signature-font';
+import { getSignatureFontFamily } from '@documenso/lib/constants/pdf';
 import { isBase64Image, SIGNATURE_CANVAS_DPI } from '@documenso/lib/constants/signatures';
 import { useEffect, useRef } from 'react';
-
 import { cn } from '../../lib/utils';
-
-const SIGNATURE_FONT_FAMILY = 'Caveat';
+import { SignatureFontStatus } from './signature-font-status';
 
 export type SignatureRenderProps = {
   className?: string;
@@ -14,6 +15,9 @@ export type SignatureRenderProps = {
  * Renders a typed, uploaded or drawn signature.
  */
 export const SignatureRender = ({ className, value }: SignatureRenderProps) => {
+  const signatureFontFamily = getSignatureFontFamily(value);
+  const requiredFonts = getRequiredSignatureFontFamilies(signatureFontFamily, value).join(', ');
+  const { status, retry } = useSignatureFont(`18px ${requiredFonts}`, !isBase64Image(value));
   const $el = useRef<HTMLCanvasElement>(null);
   const $imageData = useRef<ImageData | null>(null);
 
@@ -43,7 +47,7 @@ export const SignatureRender = ({ className, value }: SignatureRenderProps) => {
 
     // Start with a base font size
     let fontSize = 18;
-    ctx.font = `${fontSize}px ${SIGNATURE_FONT_FAMILY}`;
+    ctx.font = `${fontSize}px ${signatureFontFamily}`;
 
     // Measure 10 characters and calculate scale factor
     const characterWidth = ctx.measureText('m'.repeat(10)).width;
@@ -53,7 +57,7 @@ export const SignatureRender = ({ className, value }: SignatureRenderProps) => {
     fontSize = fontSize * scaleFactor;
 
     // Adjust font size if it exceeds canvas width
-    ctx.font = `${fontSize}px ${SIGNATURE_FONT_FAMILY}`;
+    ctx.font = `${fontSize}px ${signatureFontFamily}`;
 
     const textWidth = ctx.measureText(value).width;
 
@@ -62,7 +66,7 @@ export const SignatureRender = ({ className, value }: SignatureRenderProps) => {
     }
 
     // Set final font and render text
-    ctx.font = `${fontSize}px ${SIGNATURE_FONT_FAMILY}`;
+    ctx.font = `${fontSize}px ${signatureFontFamily}`;
     ctx.fillText(value, canvasWidth / 2, canvasHeight / 2);
   };
 
@@ -108,38 +112,27 @@ export const SignatureRender = ({ className, value }: SignatureRenderProps) => {
       $el.current.width = $el.current.clientWidth * SIGNATURE_CANVAS_DPI;
       $el.current.height = $el.current.clientHeight * SIGNATURE_CANVAS_DPI;
     }
-  }, []);
+  }, [status, value]);
 
   useEffect(() => {
-    let isMounted = true;
-
     if (isBase64Image(value)) {
       renderImageSignature();
       return;
     }
 
-    const renderWhenFontIsReady = async () => {
-      try {
-        await document.fonts?.load(`18px ${SIGNATURE_FONT_FAMILY}`);
-      } finally {
-        if (isMounted) {
-          renderTypedSignature();
-        }
-      }
-    };
-
-    void renderWhenFontIsReady();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [value]);
+    if (status === 'ready') {
+      renderTypedSignature();
+    }
+  }, [value, status]);
 
   return (
-    <canvas
-      ref={$el}
-      className={cn('h-full w-full dark:hue-rotate-180 dark:invert', className)}
-      style={{ touchAction: 'none' }}
-    />
+    <>
+      {!isBase64Image(value) && status !== 'ready' && <SignatureFontStatus status={status} retry={retry} />}
+      <canvas
+        ref={$el}
+        className={cn('h-full w-full dark:hue-rotate-180 dark:invert', className)}
+        style={{ touchAction: 'none', display: !isBase64Image(value) && status !== 'ready' ? 'none' : undefined }}
+      />
+    </>
   );
 };

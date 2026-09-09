@@ -17,6 +17,7 @@ export type SignFieldSignatureDialogProps = {
 
 export const SignFieldSignatureDialog = createCallable<SignFieldSignatureDialogProps, string | null>(
   ({ call, fullName, typedSignatureEnabled, uploadSignatureEnabled, drawSignatureEnabled, initialSignature }) => {
+    const [signatureValid, setSignatureValid] = useState(false);
     const [localSignature, setLocalSignature] = useState(initialSignature);
 
     return (
@@ -30,6 +31,7 @@ export const SignFieldSignatureDialog = createCallable<SignFieldSignatureDialogP
             </DialogHeader>
 
             <SignaturePad
+              onValidityChange={setSignatureValid}
               fullName={fullName}
               value={localSignature ?? ''}
               onChange={({ value }) => setLocalSignature(value)}
@@ -46,7 +48,11 @@ export const SignFieldSignatureDialog = createCallable<SignFieldSignatureDialogP
               <Trans>Cancel</Trans>
             </Button>
 
-            <Button type="button" disabled={!localSignature} onClick={() => call.end(localSignature || null)}>
+            <Button
+              type="button"
+              disabled={!localSignature || !signatureValid}
+              onClick={() => call.end(localSignature || null)}
+            >
               <Trans>Sign</Trans>
             </Button>
           </DialogFooter>

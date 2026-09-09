@@ -37,7 +37,23 @@ import { selectRecipientLocale } from './utils/recipient-language';
 
 export const middleware = [nonceMiddleware];
 
-export const links: Route.LinksFunction = () => [{ rel: 'stylesheet', href: stylesheet }];
+export const links: Route.LinksFunction = () => [
+  { rel: 'stylesheet', href: stylesheet },
+  {
+    rel: 'preload',
+    href: '/fonts/saira-variablefont_wght.ttf',
+    as: 'font',
+    type: 'font/ttf',
+    crossOrigin: 'anonymous',
+  },
+  {
+    rel: 'preload',
+    href: '/fonts/caveat-variablefont_wght.ttf',
+    as: 'font',
+    type: 'font/ttf',
+    crossOrigin: 'anonymous',
+  },
+];
 
 export function meta() {
   return appMetaTags();

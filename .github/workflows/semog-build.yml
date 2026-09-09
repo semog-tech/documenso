@@ -27,7 +27,12 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test Semog recipient patches
-        run: node --test apps/remix/app/utils/semog-recipient.test.mjs
+        run: >-
+          node --test
+          apps/remix/app/utils/semog-recipient.test.mjs
+          apps/remix/app/utils/recipient-remark.test.mjs
+          apps/remix/app/utils/remark-page.test.mjs
+          packages/lib/client-only/hooks/load-signature-font.test.mjs
 
       - name: Login to GHCR
         uses: docker/login-action@v3
