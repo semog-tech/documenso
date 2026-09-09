@@ -31,6 +31,9 @@ import { langCookie } from './storage/lang-cookie.server';
 import { themeSessionResolver } from './storage/theme-session.server';
 import { appMetaTags } from './utils/meta';
 import { nonce, nonceContext } from './utils/nonce';
+import { getRecipientAppearance } from './utils/recipient-appearance';
+import { getRecipientDocumentLanguage } from './utils/recipient-document-language.server';
+import { selectRecipientLocale } from './utils/recipient-language';
 
 export const middleware = [nonceMiddleware];
 
@@ -54,11 +57,22 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   const cookieHeader = request.headers.get('cookie') ?? '';
 
-  let lang: SupportedLanguageCodes = await langCookie.parse(cookieHeader);
+  // Resolve the persisted/browser locale first. This is what we keep storing in
+  // the `lang` cookie so a recipient who later visits the rest of the app is not
+  // permanently switched to a document's language.
+  let cookieLang: SupportedLanguageCodes = await langCookie.parse(cookieHeader);
 
-  if (!APP_I18N_OPTIONS.supportedLangs.includes(lang)) {
-    lang = extractLocaleData({ headers: request.headers }).lang;
+  if (!APP_I18N_OPTIONS.supportedLangs.includes(cookieLang)) {
+    cookieLang = extractLocaleData({ headers: request.headers }).lang;
   }
+
+  // For the public signing routes, the rendered UI language (and therefore the
+  // `<html lang>` attribute that drives client-side hydration in
+  // `entry.client.tsx`) follows the document's configured language. Returns
+  // `null` everywhere else, so non-signing routes keep the cookie/browser lang.
+  const documentLang = await getRecipientDocumentLanguage(request);
+
+  const { language: lang, cookieLanguage } = selectRecipientLocale(documentLang, cookieLang);
 
   const disableAnimations = cookieHeader.includes('__disable_animations=true');
 
@@ -89,7 +103,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     },
     {
       headers: {
-        'Set-Cookie': await langCookie.serialize(lang),
+        // Persist the cookie/browser lang only — never the per-document signing
+        // language — so visiting a `pt-BR` signing link doesn't permanently
+        // change the recipient's locale for the rest of the app.
+        'Set-Cookie': await langCookie.serialize(cookieLanguage),
       },
     },
   );
@@ -99,7 +116,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { theme, basePath } = useLoaderData<typeof loader>() || {};
 
   return (
-    <ThemeProvider specifiedTheme={theme} themeAction={`${basePath ?? ''}/api/theme`}>
+    <ThemeProvider specifiedTheme={theme ?? null} themeAction={`${basePath ?? ''}/api/theme`}>
       <LayoutContent>{children}</LayoutContent>
     </ThemeProvider>
   );
@@ -124,14 +141,22 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
   // any portaled content (Radix dialogs/popovers/dropdowns mount outside the
   // route tree, attached directly to document.body).
   const matches = useMatches();
-  const isRecipientRoute = matches.some((m) => m.id?.startsWith('routes/_recipient+'));
+  // The provider also follows BroadcastChannel/system updates. Recipient HTML
+  // must stay light even if its hook changes after the initial render.
+  const { isRecipientRoute, ssrTheme, theme: effectiveTheme } = getRecipientAppearance(matches, data.theme, theme);
 
   return (
     // `suppressHydrationWarning` because `remix-themes` intentionally mutates
     // `data-theme`/`class` on <html> before hydration (PreventFlashOnWrongTheme),
     // so the server-rendered attributes never match the client render when the
     // theme is resolved from the system preference. Attribute-only, one level deep.
-    <html translate="no" lang={lang} data-theme={theme} className={theme ?? ''} suppressHydrationWarning>
+    <html
+      translate="no"
+      lang={lang}
+      data-theme={effectiveTheme}
+      className={effectiveTheme ?? ''}
+      suppressHydrationWarning
+    >
       <head>
         <meta charSet="utf-8" />
         <link rel="apple-touch-icon" sizes="180x180" href={`${basePath}/apple-touch-icon.png`} />
@@ -143,7 +168,11 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links nonce={nonce(cspNonce)} />
         <meta name="google" content="notranslate" />
-        <PreventFlashOnWrongTheme ssrTheme={Boolean(data.theme)} nonce={nonce(cspNonce)} />
+        {isRecipientRoute ? (
+          <meta name="color-scheme" content="light" />
+        ) : (
+          <PreventFlashOnWrongTheme ssrTheme={ssrTheme} nonce={nonce(cspNonce)} />
+        )}
 
         {disableAnimations && (
           <style
