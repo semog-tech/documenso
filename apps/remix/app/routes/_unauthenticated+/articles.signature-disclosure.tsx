@@ -2,11 +2,15 @@ import { SUPPORT_EMAIL } from '@documenso/lib/constants/app';
 import { Button } from '@documenso/ui/primitives/button';
 import { Trans } from '@lingui/react/macro';
 import { Link } from 'react-router';
+import signatureDisclosureStylesheet from '~/styles/signature-disclosure.css?url';
+import type { Route } from './+types/articles.signature-disclosure';
+
+export const links: Route.LinksFunction = () => [{ rel: 'stylesheet', href: signatureDisclosureStylesheet }];
 
 export default function SignatureDisclosure() {
   return (
-    <div>
-      <article className="prose dark:prose-invert">
+    <div className="semog-signature-disclosure">
+      <article className="prose">
         <h1>
           <Trans>Electronic Signature Disclosure</Trans>
         </h1>

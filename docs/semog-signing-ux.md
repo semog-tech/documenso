@@ -62,3 +62,24 @@ Os casos readOnly, destinatário concluído e ausência de campo elegível foram
 cobertos pelos helpers. A revisão não completou uma assinatura. O check final
 integrado da principal também terminou com código 0; Biome sem erros, com três
 avisos preexistentes fora do atalho.
+
+## Favicon e divulgação de assinatura eletrônica
+
+O favicon usa uma cópia byte a byte de `public/images/logosemogredonda.svg` do
+SemogApp, SHA-256 `bff59b07ee56c1a39834b1631d284a35b4f337c056b3bd020b7ad8b24a308e01`.
+No Documenso, o SVG está em `apps/remix/public/semog-favicon-bff59b07ee56.svg`.
+Os PNGs de 16, 32, 180, 192 e 512 px foram derivados deterministicamente da mesma
+arte, com transparência; o fallback `favicon.ico` contém seis tamanhos.
+
+Os links do cabeçalho e os ícones do manifesto usam caminhos com o sufixo
+`bff59b07ee56`, evitando reutilizar os endereços antigos do cache. Os caminhos
+legados também receberam a arte Semog. Os dois manifestos usam `theme_color`
+`#1B2D70`, mantendo nome e nome curto do produto. O SVG foi comparado por hash,
+os PNGs e o ICO foram decodificados e os links do manifesto validados.
+
+A rota pública `/articles/signature-disclosure` utiliza português do Brasil,
+inclusive no acesso direto e nas requisições de dados do roteador, preservando
+a preferência de idioma das demais páginas. A tradução mantém os termos de
+divulgação e consentimento de assinatura eletrônica existentes; não cria novas
+condições jurídicas. Esta alteração não implica correção de um eventual flash
+de logo em produção, que não foi reproduzido.

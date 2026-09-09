@@ -13,12 +13,13 @@ import { resolveRecipientLanguage } from './recipient-language';
  * page in English even when the document was created as e.g. `pt-BR`.
  *
  * This helper is intentionally scoped: it ONLY returns a language for the
- * recipient signing routes (`/sign/...`, `/d/...`). For every other route it
+ * recipient signing routes (`/sign/...`, `/d/...`) and the public Semog
+ * signature disclosure (fixed pt-BR, without a document lookup). For every other route it
  * returns `null`, so the caller falls back to the existing locale resolution
  * and global behaviour is untouched.
  *
  * Returns a supported language code, or `null` when:
- *   - the request is not a signing route,
+ *   - the request is neither a signing route nor the public disclosure,
  *   - no document is found for the token,
  *   - the stored language is missing / not in `SUPPORTED_LANGUAGE_CODES`.
  */

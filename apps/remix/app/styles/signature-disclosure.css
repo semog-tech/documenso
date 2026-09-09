@@ -1,0 +1,43 @@
+/* Same Semog signing tokens, scoped to this public article only. */
+.semog-signature-disclosure {
+  --primary: 227 61% 27%;
+  --primary-foreground: 0 0% 100%;
+  --ring: 227 61% 27%;
+  --background: 0 0% 100%;
+  --foreground: 222.2 47.4% 11.2%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --border: 214.3 31.8% 91.4%;
+  --input: 214.3 31.8% 91.4%;
+  --secondary: 210 40% 96.1%;
+  color: hsl(var(--foreground));
+}
+
+.semog-signature-disclosure .prose {
+  --tw-prose-body: hsl(var(--foreground));
+  --tw-prose-headings: hsl(var(--primary));
+  --tw-prose-links: hsl(var(--primary));
+  --tw-prose-bold: hsl(var(--foreground));
+  --tw-prose-bullets: hsl(var(--muted-foreground));
+  max-width: 70ch;
+}
+
+.semog-signature-disclosure .prose a {
+  overflow-wrap: anywhere;
+  text-underline-offset: 0.2em;
+}
+
+.semog-signature-disclosure .prose a:hover {
+  text-decoration-thickness: 2px;
+}
+
+.semog-signature-disclosure .prose a:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.semog-signature-disclosure ::selection {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
