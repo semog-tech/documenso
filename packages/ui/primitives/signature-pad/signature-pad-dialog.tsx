@@ -38,6 +38,7 @@ export const SignaturePadDialog = ({
 }: SignaturePadDialogProps) => {
   const { i18n } = useLingui();
 
+  const [signatureValid, setSignatureValid] = useState(false);
   const [showSignatureModal, setShowSignatureModal] = useState(false);
   const [signature, setSignature] = useState<string>(value ?? '');
 
@@ -112,6 +113,7 @@ export const SignaturePadDialog = ({
       <Dialog open={showSignatureModal} onOpenChange={disabled ? undefined : setShowSignatureModal}>
         <DialogContent hideClose={true} className="p-6 pt-4">
           <SignaturePad
+            onValidityChange={setSignatureValid}
             id="signature"
             fullName={fullName}
             value={value}
@@ -132,7 +134,7 @@ export const SignaturePadDialog = ({
 
             <Button
               type="button"
-              disabled={!signature}
+              disabled={!signature || !signatureValid}
               onClick={() => {
                 onChange(signature);
                 setShowSignatureModal(false);

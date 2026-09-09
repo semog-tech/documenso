@@ -5,7 +5,7 @@ import type { PageRenderData } from '../providers/envelope-render-provider';
 
 type RenderFunction = (props: { stage: Konva.Stage; pageLayer: Konva.Layer }) => void;
 
-export const usePageRenderer = (renderFunction: RenderFunction, pageData: PageRenderData) => {
+export const usePageRenderer = (renderFunction: RenderFunction, pageData: PageRenderData, ready = true) => {
   const { pageWidth, pageHeight, scale, imageLoadingState, pageNumber } = pageData;
 
   const konvaContainer = useRef<HTMLDivElement>(null);
@@ -40,7 +40,7 @@ export const usePageRenderer = (renderFunction: RenderFunction, pageData: PageRe
   useEffect(() => {
     const { current: container } = konvaContainer;
 
-    if (!container || imageLoadingState !== 'loaded') {
+    if (!container || imageLoadingState !== 'loaded' || !ready) {
       return;
     }
 
@@ -73,7 +73,7 @@ export const usePageRenderer = (renderFunction: RenderFunction, pageData: PageRe
       stage.current?.destroy();
       stage.current = null;
     };
-  }, [imageLoadingState, scaledViewport]);
+  }, [imageLoadingState, scaledViewport, ready]);
 
   return {
     konvaContainer,

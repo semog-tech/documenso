@@ -116,3 +116,45 @@ describe('Semog recipient appearance', () => {
     });
   });
 });
+
+describe('Semog signature disclosure', () => {
+  it('uses pt-BR for the exact public article and data requests without consulting a document', async () => {
+    let calls = 0;
+    const dependencies = {
+      ...deps(),
+      getLanguage: () => {
+        calls += 1;
+        return Promise.reject(new Error('unavailable'));
+      },
+    };
+    for (const path of ['/articles/signature-disclosure', '/articles/signature-disclosure.data']) {
+      const language = await resolveRecipientLanguage(request(path), dependencies);
+      assert.deepEqual(selectRecipientLocale(language, 'en'), { language: 'pt-BR', cookieLanguage: 'en' });
+    }
+    assert.equal(
+      await resolveRecipientLanguage(request('/ESign/articles/signature-disclosure.data'), {
+        ...dependencies,
+        basePath: '/ESign',
+      }),
+      'pt-BR',
+    );
+    for (const path of [
+      '/articles/signature-disclosure-other',
+      '/articles/signature-disclosure/extra',
+      '/articles/other',
+    ]) {
+      assert.equal(await resolveRecipientLanguage(request(path), dependencies), null);
+    }
+    assert.equal(calls, 0);
+  });
+  it('forces light only on the exact disclosure route', () => {
+    const article = 'routes/_unauthenticated+/articles.signature-disclosure';
+    assert.deepEqual(getRecipientAppearance([{ id: article }], 'dark', 'dark'), {
+      isRecipientRoute: true,
+      theme: 'light',
+      ssrTheme: true,
+    });
+    assert.equal(getRecipientAppearance([{ id: `${article}-other` }], 'dark').theme, 'dark');
+    assert.equal(getRecipientAppearance([{ id: 'routes/_unauthenticated+/signin' }], 'dark').theme, 'dark');
+  });
+});

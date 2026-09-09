@@ -1,27 +1,43 @@
+import { useSignatureFont } from '@documenso/lib/client-only/hooks/use-signature-font';
 import { useLingui } from '@lingui/react/macro';
 import { useEffect, useRef } from 'react';
-
 import { cn } from '../../lib/utils';
+import { SignatureFontStatus } from './signature-font-status';
 
 export type SignaturePadTypeProps = {
   className?: string;
   value?: string;
   defaultValue?: string;
+  onValidityChange?: (valid: boolean) => void;
   onChange: (_value: string) => void;
 };
 
-export const SignaturePadType = ({ className, value, defaultValue, onChange }: SignaturePadTypeProps) => {
+export const SignaturePadType = ({
+  className,
+  value,
+  defaultValue,
+  onChange,
+  onValidityChange,
+}: SignaturePadTypeProps) => {
   const { t } = useLingui();
+  const { status, retry } = useSignatureFont('72px Saira');
+  useEffect(() => {
+    onValidityChange?.(status === 'ready');
+  }, [status, onValidityChange]);
 
   const $isDirty = useRef(false);
   // Colors don't actually work for text.
 
   useEffect(() => {
-    if (!$isDirty.current && !value && defaultValue) {
+    if (status === 'ready' && !$isDirty.current && !value && defaultValue) {
       $isDirty.current = true;
       onChange(defaultValue);
     }
-  }, [defaultValue, value, onChange]);
+  }, [defaultValue, value, onChange, status]);
+
+  if (status !== 'ready') {
+    return <SignatureFontStatus status={status} retry={retry} />;
+  }
 
   return (
     <div className={cn('flex h-full w-full items-center justify-center', className)}>

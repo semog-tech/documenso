@@ -17,27 +17,22 @@ export const useScrollToPage = (contentRef: RefObject<HTMLElement | null>, scrol
       return;
     }
 
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'data-scroll-to-page') {
-          const raw = el.getAttribute('data-scroll-to-page');
-
-          if (raw) {
-            const pageNumber = parseInt(raw, 10);
-
-            if (!isNaN(pageNumber) && pageNumber >= 1) {
-              // Pages are 1-indexed, virtual list items are 0-indexed.
-              scrollToItem(pageNumber - 1);
-            }
-
-            el.removeAttribute('data-scroll-to-page');
-          }
-        }
+    const consumeRequest = () => {
+      const raw = el.getAttribute('data-scroll-to-page');
+      if (!raw) {
+        return;
       }
-    });
-
+      const pageNumber = Number(raw);
+      el.removeAttribute('data-scroll-to-page');
+      if (Number.isInteger(pageNumber) && pageNumber >= 1) {
+        // Pages are 1-indexed; virtual list items are 0-indexed.
+        scrollToItem(pageNumber - 1);
+      }
+    };
+    const observer = new MutationObserver(consumeRequest);
     observer.observe(el, { attributes: true, attributeFilter: ['data-scroll-to-page'] });
-
+    // A request can arrive between the DOM commit and this effect registering.
+    consumeRequest();
     return () => observer.disconnect();
   }, [contentRef, scrollToItem]);
 };

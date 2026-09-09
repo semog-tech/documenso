@@ -4,7 +4,7 @@ import { isBase64Image } from '@documenso/lib/constants/signatures';
 import { Trans } from '@lingui/react/macro';
 import { KeyboardIcon, UploadCloudIcon } from 'lucide-react';
 import type { HTMLAttributes } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { match } from 'ts-pattern';
 
 import { SignatureIcon } from '../../icons/signature';
@@ -41,7 +41,9 @@ export const SignaturePad = ({
   typedSignatureEnabled = true,
   uploadSignatureEnabled = true,
   drawSignatureEnabled = true,
+  onValidityChange,
 }: SignaturePadProps) => {
+  const [typedFontReady, setTypedFontReady] = useState(false);
   const [imageSignature, setImageSignature] = useState(isBase64Image(value) ? value : '');
   const [drawSignature, setDrawSignature] = useState(isBase64Image(value) ? value : '');
   const [typedSignature, setTypedSignature] = useState(isBase64Image(value) ? '' : value);
@@ -83,6 +85,10 @@ export const SignaturePad = ({
       throw new Error('No signature enabled');
     })(),
   );
+
+  useEffect(() => {
+    onValidityChange?.(tab !== 'text' || typedFontReady);
+  }, [tab, typedFontReady, onValidityChange]);
 
   const onImageSignatureChange = (value: string) => {
     setImageSignature(value);
@@ -178,7 +184,12 @@ export const SignaturePad = ({
         value="text"
         className="relative flex aspect-signature-pad items-center justify-center rounded-md border border-border bg-muted/25 text-center"
       >
-        <SignaturePadType value={typedSignature} defaultValue={fullName} onChange={onTypedSignatureChange} />
+        <SignaturePadType
+          onValidityChange={setTypedFontReady}
+          value={typedSignature}
+          defaultValue={fullName}
+          onChange={onTypedSignatureChange}
+        />
       </TabsContent>
 
       <TabsContent

@@ -37,7 +37,23 @@ import { selectRecipientLocale } from './utils/recipient-language';
 
 export const middleware = [nonceMiddleware];
 
-export const links: Route.LinksFunction = () => [{ rel: 'stylesheet', href: stylesheet }];
+export const links: Route.LinksFunction = () => [
+  { rel: 'stylesheet', href: stylesheet },
+  {
+    rel: 'preload',
+    href: '/fonts/saira-variablefont_wght.ttf',
+    as: 'font',
+    type: 'font/ttf',
+    crossOrigin: 'anonymous',
+  },
+  {
+    rel: 'preload',
+    href: '/fonts/caveat-variablefont_wght.ttf',
+    as: 'font',
+    type: 'font/ttf',
+    crossOrigin: 'anonymous',
+  },
+];
 
 export function meta() {
   return appMetaTags();
@@ -159,11 +175,12 @@ export function LayoutContent({ children }: { children: React.ReactNode }) {
     >
       <head>
         <meta charSet="utf-8" />
-        <link rel="apple-touch-icon" sizes="180x180" href={`${basePath}/apple-touch-icon.png`} />
-        <link rel="icon" type="image/png" sizes="32x32" href={`${basePath}/favicon-32x32.png`} />
-        <link rel="icon" type="image/png" sizes="16x16" href={`${basePath}/favicon-16x16.png`} />
+        <link rel="apple-touch-icon" sizes="180x180" href={`${basePath}/semog-favicon-180-bff59b07ee56.png`} />
+        <link rel="icon" type="image/png" sizes="32x32" href={`${basePath}/semog-favicon-32-bff59b07ee56.png`} />
+        <link rel="icon" type="image/png" sizes="16x16" href={`${basePath}/semog-favicon-16-bff59b07ee56.png`} />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="manifest" href={`${basePath}/site.webmanifest`} />
+        <link rel="icon" type="image/svg+xml" sizes="any" href={`${basePath}/semog-favicon-bff59b07ee56.svg`} />
+        <link rel="manifest" href={`${basePath}/site-bff59b07ee56.webmanifest`} />
         <meta name="google" content="notranslate" />
         <Meta />
         <Links nonce={nonce(cspNonce)} />

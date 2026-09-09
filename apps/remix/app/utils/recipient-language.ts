@@ -5,7 +5,7 @@ type LanguageDependencies<Language extends string> = {
   onFailure: () => void;
 };
 
-/** Keep document locale scoped to recipient routes, including React Router data requests. */
+/** Scope locale overrides to recipient routes and the public Semog disclosure, including data requests. */
 export const resolveRecipientLanguage = async <Language extends string>(
   request: Request,
   dependencies: LanguageDependencies<Language>,
@@ -15,6 +15,10 @@ export const resolveRecipientLanguage = async <Language extends string>(
     const pathname = new URL(request.url).pathname.replace(/\.data$/, '');
     if (basePath && !pathname.startsWith(`${basePath}/`)) {
       return null;
+    }
+    if (pathname.slice(basePath.length) === '/articles/signature-disclosure') {
+      const language = 'pt-BR';
+      return dependencies.isSupportedLanguage(language) ? language : null;
     }
     const route = pathname.slice(basePath.length).match(/^\/(sign|d)\/([^/]+)(?:\/|$)/);
     if (!route) {
