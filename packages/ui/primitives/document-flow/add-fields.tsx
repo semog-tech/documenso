@@ -577,7 +577,7 @@ export const AddFieldsFormPartial = ({
               {selectedField && (
                 <div
                   className={cn(
-                    'pointer-events-none fixed z-50 flex cursor-pointer flex-col items-center justify-center rounded-[2px] bg-white text-muted-foreground ring-2 transition duration-200 [container-type:size] dark:text-muted-background',
+                    'pointer-events-none fixed z-50 flex cursor-pointer flex-col items-center justify-center rounded-[2px] bg-white text-muted-foreground ring-2 transition duration-200 [container-type:size] dark:text-muted',
                     selectedSignerStyles?.base,
                     {
                       '-rotate-6 scale-90 opacity-50 dark:bg-black/20': !isFieldWithinBounds,
@@ -920,7 +920,7 @@ export const AddFieldsFormPartial = ({
           {hasErrors && (
             <div className="mt-4">
               <ul>
-                <li className="text-red-500 text-sm">
+                <li className="text-destructive text-sm">
                   <Trans>
                     To proceed further, please set at least one value for the{' '}
                     {emptyCheckboxFields.length > 0 ? 'Checkbox' : emptyRadioFields.length > 0 ? 'Radio' : 'Select'}{' '}

@@ -26,31 +26,15 @@ export const createUser = async ({ name, email, password, signature }: CreateUse
     throw new AppError(AppErrorCode.ALREADY_EXISTS);
   }
 
-  const user = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        name,
-        email: email.toLowerCase(),
-        password: hashedPassword, // Todo: (RR7) Drop password.
-        signature,
-      },
-    });
-
-    // Todo: (RR7) Migrate to use this after RR7.
-    // await tx.account.create({
-    //   data: {
-    //     userId: user.id,
-    //     type: 'emailPassword', // Todo: (RR7)
-    //     provider: 'DOCUMENSO', // Todo: (RR7) Enums
-    //     providerAccountId: user.id.toString(),
-    //     password: hashedPassword,
-    //   },
-    // });
-
-    return user;
+  const user = await prisma.user.create({
+    data: {
+      name,
+      email: email.toLowerCase(),
+      password: hashedPassword, // Todo: (RR7) Drop password.
+      signature,
+    },
   });
 
-  // Not used at the moment, uncomment if required.
   await onCreateUserHook(user).catch((err) => {
     // Todo: (RR7) Add logging.
     console.error(err);
