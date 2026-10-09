@@ -20,6 +20,7 @@ import { getCertificatePdf } from '../../../server-only/htmltopdf/get-certificat
 import { insertFieldInPDFV1 } from '../../../server-only/pdf/insert-field-in-pdf-v1';
 import { insertFieldInPDFV2 } from '../../../server-only/pdf/insert-field-in-pdf-v2';
 import { legacy_insertFieldInPDF } from '../../../server-only/pdf/legacy-insert-field-in-pdf';
+import { isSemogActivationManaged } from '../../../server-only/semog-signing/activation-ownership';
 import { getTeamSettings } from '../../../server-only/team/get-team-settings';
 import { triggerWebhook } from '../../../server-only/webhooks/trigger/trigger-webhook';
 import { DOCUMENT_AUDIT_LOG_TYPE, type TDocumentAuditLog } from '../../../types/document-audit-logs';
@@ -38,6 +39,14 @@ import type { TSealDocumentJobDefinition } from './seal-document';
 
 export const run = async ({ payload, io }: { payload: TSealDocumentJobDefinition; io: JobRunIO }) => {
   const { documentId, sendEmail = true, isResealing = false, requestMetadata } = payload;
+  const ownership = await prisma.envelope.findFirstOrThrow({
+    where: { type: EnvelopeType.DOCUMENT, secondaryId: mapDocumentIdToSecondaryId(documentId) },
+    select: { id: true },
+  });
+  if (await isSemogActivationManaged(prisma, ownership.id)) {
+    io.logger.info('Semog-managed envelope sealing; native dispatch skipped');
+    return;
+  }
 
   const { envelopeId, envelopeStatus, isRejected } = await io.runTask('seal-document', async () => {
     const envelope = await prisma.envelope.findFirstOrThrow({

@@ -30,6 +30,8 @@ import { filesRoute } from './api/files/files';
 import { type AppContext, appContext } from './context';
 import { appMiddleware } from './middleware';
 import { securityHeadersMiddleware } from './security-headers';
+import { handleSemogHostRequest, semogHostRateLimit, startSemogHost } from './semog-signing-host';
+import { mountSemogSigningRoutes } from './semog-signing-routes';
 import { openApiTrpcServerHandler } from './trpc/hono-trpc-open-api';
 import { reactRouterTrpcServer } from './trpc/hono-trpc-remix';
 
@@ -37,6 +39,7 @@ import { reactRouterTrpcServer } from './trpc/hono-trpc-remix';
 // load-context.ts. server/main.js imports getLoadContext from the rolled-up
 // output to wire it into the React Router adapter.
 export { getLoadContext } from './load-context';
+export { stopSemogHost } from './semog-signing-host';
 
 export interface HonoEnv {
   Variables: RequestIdVariables & {
@@ -117,6 +120,7 @@ app.route('/api/ai', aiRoute);
 app.route('/api/csc', csc);
 
 // API servers.
+mountSemogSigningRoutes(app, { handler: handleSemogHostRequest, basePath, rateLimit: semogHostRateLimit });
 app.route('/api/v1', tsRestHonoApp);
 app.use('/api/jobs/*', jobsClient.getApiHandler());
 
@@ -155,6 +159,7 @@ void LicenseClient.start();
 // Start cron scheduler for background jobs (e.g. envelope expiration sweep).
 // No-op for Inngest provider which handles cron externally.
 jobsClient.startCron();
+void startSemogHost();
 
 void migrateDeletedAccountServiceAccount();
 void migrateLegacyServiceAccount();

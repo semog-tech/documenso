@@ -1,0 +1,16 @@
+{
+  "extends": "./packages/lib/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@documenso/lib/*": ["./packages/lib/*"] },
+    "types": ["node", "@documenso/tsconfig/process-env.d.ts", "vite/client"],
+    "noEmit": true
+  },
+  "include": [
+    "packages/lib/server-only/semog-signing/**/*.ts",
+    "scripts/semog-signing-*.ts",
+    "apps/remix/server/semog-signing-host.ts",
+    "apps/remix/server/semog-signing-routes.ts"
+  ],
+  "exclude": ["node_modules"]
+}

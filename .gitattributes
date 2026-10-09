@@ -1,0 +1,3 @@
+# Preserve Linux shebangs and the published Prisma migration checksums.
+*.sh text eol=lf
+*.sql text eol=lf

@@ -1,6 +1,9 @@
 declare namespace NodeJS {
   export interface ProcessEnv {
     PORT?: string;
+    SEMOG_SIGNING_ENABLED?: string;
+    SEMOG_SIGNING_WORKER_ENABLED?: string;
+    SEMOG_SIGNING_DELIVERY_ENABLED?: string;
     NEXT_PUBLIC_WEBAPP_URL?: string;
     NEXT_PRIVATE_DOCUMENSO_LICENSE_KEY?: string;
 

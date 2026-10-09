@@ -1,12 +1,16 @@
 import { prisma } from '@documenso/prisma';
 import { DocumentStatus, RecipientRole, SendStatus, SigningStatus } from '@prisma/client';
-
+import {
+  filterSemogUnmanaged,
+  listSemogActivationManaged,
+} from '../../../server-only/semog-signing/activation-ownership';
 import { jobs } from '../../client';
 import type { JobRunIO } from '../../client/_internal/job';
 import type { TSendSigningRemindersSweepJobDefinition } from './send-signing-reminders-sweep';
 
 export const run = async ({ io }: { payload: TSendSigningRemindersSweepJobDefinition; io: JobRunIO }) => {
   const now = new Date();
+  const managedEnvelopeIds = await listSemogActivationManaged(prisma);
 
   const recipients = await prisma.recipient.findMany({
     where: {
@@ -20,11 +24,12 @@ export const run = async ({ io }: { payload: TSendSigningRemindersSweepJobDefini
       // covers the window before the expiration sweep runs.
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       envelope: {
+        id: { notIn: managedEnvelopeIds },
         status: DocumentStatus.PENDING,
         deletedAt: null,
       },
     },
-    select: { id: true },
+    select: { id: true, envelopeId: true },
     take: 1000,
   });
 
@@ -35,8 +40,9 @@ export const run = async ({ io }: { payload: TSendSigningRemindersSweepJobDefini
 
   io.logger.info(`Found ${recipients.length} recipients needing signing reminders`);
 
+  const nativeRecipients = await filterSemogUnmanaged(prisma, recipients, (recipient) => recipient.envelopeId);
   await Promise.allSettled(
-    recipients.map(async (recipient) => {
+    nativeRecipients.map(async (recipient) => {
       await jobs.triggerJob({
         name: 'internal.process-signing-reminder',
         payload: {
