@@ -1,7 +1,10 @@
-import { kyselyPrisma, sql } from '@documenso/prisma';
+import { kyselyPrisma, prisma, sql } from '@documenso/prisma';
 import { DocumentStatus, EnvelopeType, RecipientRole, SigningStatus } from '@prisma/client';
 import { DateTime } from 'luxon';
-
+import {
+  filterSemogUnmanaged,
+  listSemogActivationManaged,
+} from '../../../server-only/semog-signing/activation-ownership';
 import { mapSecondaryIdToDocumentId } from '../../../utils/envelope';
 import { jobs } from '../../client';
 import type { JobRunIO } from '../../client/_internal/job';
@@ -11,6 +14,7 @@ export const run = async ({ io }: { payload: TSealDocumentSweepJobDefinition; io
   const now = DateTime.now();
   const fifteenMinutesAgo = now.minus({ minutes: 15 }).toJSDate();
   const sixHoursAgo = now.minus({ hours: 6 }).toJSDate();
+  const managedEnvelopeIds = await listSemogActivationManaged(prisma);
 
   // Find all PENDING envelopes that should have been sealed but weren't.
   //
@@ -28,6 +32,7 @@ export const run = async ({ io }: { payload: TSealDocumentSweepJobDefinition; io
     .where('Envelope.status', '=', sql.lit(DocumentStatus.PENDING))
     .where('Envelope.type', '=', sql.lit(EnvelopeType.DOCUMENT))
     .where('Envelope.deletedAt', 'is', null)
+    .$if(managedEnvelopeIds.length > 0, (query) => query.where('Envelope.id', 'not in', managedEnvelopeIds))
     // Ensure there is at least one recipient.
     .where((eb) => eb.exists(eb.selectFrom('Recipient').whereRef('Recipient.envelopeId', '=', 'Envelope.id')))
     // Document is ready to seal: all recipients are SIGNED/CC, or any recipient REJECTED.
@@ -84,8 +89,9 @@ export const run = async ({ io }: { payload: TSealDocumentSweepJobDefinition; io
 
   io.logger.info(`Found ${unsealedEnvelopes.length} unsealed documents`);
 
+  const nativeEnvelopes = await filterSemogUnmanaged(prisma, unsealedEnvelopes, (envelope) => envelope.id);
   await Promise.allSettled(
-    unsealedEnvelopes.map(async (envelope) => {
+    nativeEnvelopes.map(async (envelope) => {
       const documentId = mapSecondaryIdToDocumentId(envelope.secondaryId);
 
       io.logger.info(`Triggering seal for document ${documentId} (${envelope.id})`);

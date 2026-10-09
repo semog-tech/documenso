@@ -19,6 +19,7 @@ import { buildEnvelopeEmailHeaders } from '../../../server-only/email/build-enve
 import { getEmailContext } from '../../../server-only/email/get-email-context';
 import { assertOrganisationRatesAndLimits } from '../../../server-only/rate-limit/assert-organisation-rates-and-limits';
 import { updateRecipientNextReminder } from '../../../server-only/recipient/update-recipient-next-reminder';
+import { isSemogActivationManaged } from '../../../server-only/semog-signing/activation-ownership';
 import { triggerWebhook } from '../../../server-only/webhooks/trigger/trigger-webhook';
 import { DOCUMENT_AUDIT_LOG_TYPE, DOCUMENT_EMAIL_TYPE } from '../../../types/document-audit-logs';
 import { extractDerivedDocumentEmailSettings } from '../../../types/document-email';
@@ -32,6 +33,11 @@ import type { TProcessSigningReminderJobDefinition } from './process-signing-rem
 export const run = async ({ payload, io }: { payload: TProcessSigningReminderJobDefinition; io: JobRunIO }) => {
   const { recipientId } = payload;
   const now = new Date();
+  const ownership = await prisma.recipient.findUnique({ where: { id: recipientId }, select: { envelopeId: true } });
+  if (!ownership || (await isSemogActivationManaged(prisma, ownership.envelopeId))) {
+    io.logger.info('Missing recipient or Semog-managed signing reminder; native dispatch skipped');
+    return;
+  }
 
   // Atomically claim this reminder by setting lastReminderSentAt and clearing
   // nextReminderAt so no other sweep picks it up. The expiration filter

@@ -1,6 +1,6 @@
 import { prisma } from '@documenso/prisma';
 import { SigningStatus, WebhookTriggerEvents } from '@prisma/client';
-
+import { isSemogActivationManaged } from '../../../server-only/semog-signing/activation-ownership';
 import { triggerWebhook } from '../../../server-only/webhooks/trigger/trigger-webhook';
 import { DOCUMENT_AUDIT_LOG_TYPE } from '../../../types/document-audit-logs';
 import { mapEnvelopeToWebhookDocumentPayload, ZWebhookDocumentSchema } from '../../../types/webhook-payload';
@@ -11,6 +11,15 @@ import type { TProcessRecipientExpiredJobDefinition } from './process-recipient-
 
 export const run = async ({ payload, io }: { payload: TProcessRecipientExpiredJobDefinition; io: JobRunIO }) => {
   const { recipientId } = payload;
+
+  const ownership = await prisma.recipient.findUniqueOrThrow({
+    where: { id: recipientId },
+    select: { envelopeId: true },
+  });
+  if (await isSemogActivationManaged(prisma, ownership.envelopeId)) {
+    io.logger.info('Semog-managed recipient expiration; native dispatch skipped');
+    return;
+  }
 
   // Atomic idempotency guard — only one concurrent worker wins.
   // Wrapping in runTask caches the result so that on retry the claim is not

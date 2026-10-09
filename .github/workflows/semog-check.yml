@@ -1,0 +1,63 @@
+name: Semog Signing Checks
+
+on:
+  pull_request:
+    branches: [leandrosemog/documenso-2.18]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  signing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HUSKY: "0"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      # Generation requires URLs, but these checks never connect or migrate.
+      NEXT_PRIVATE_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/semog_ci
+      NEXT_PRIVATE_DIRECT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/semog_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.21.0"
+          cache: npm
+
+      - name: Use the declared npm version
+        run: npm install --global npm@11.19.1
+
+      - name: Install the locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate Prisma types without migrations
+        run: npm run prisma:generate --workspace @documenso/prisma
+
+      - name: Check formatting and lint of the bridge integration
+        run: >-
+          node node_modules/@biomejs/biome/bin/biome check
+          packages/lib/server-only/semog-signing
+          apps/remix/server/semog-signing-host.ts
+          apps/remix/server/semog-signing-routes.ts
+
+      - name: Check signing types and their included tests
+        run: node node_modules/typescript/bin/tsc --noEmit -p tsconfig.semog-signing.json
+
+      - name: Test the native signing bridge
+        run: >-
+          node node_modules/vitest/vitest.mjs run
+          --config packages/lib/vitest.config.ts
+          --maxWorkers=2
+          packages/lib/server-only/semog-signing
+
+      - name: Test Semog recipient patches
+        run: >-
+          node --test
+          apps/remix/app/utils/semog-recipient.test.mjs
+          apps/remix/app/utils/recipient-remark.test.mjs
+          apps/remix/app/utils/remark-page.test.mjs
+          packages/lib/client-only/hooks/load-signature-font.test.mjs

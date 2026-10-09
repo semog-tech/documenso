@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import handle from 'hono-react-router-adapter/node';
 
 import { getLoadContext } from './hono/server/load-context.js';
-import server from './hono/server/router.js';
+import server, { stopSemogHost } from './hono/server/router.js';
 import * as build from './index.js';
 
 // Sub-path the app is served under (e.g. "/ESign"). Empty = root.
@@ -46,4 +46,29 @@ const handler = handle(build, server, { getLoadContext });
 
 const port = parseInt(process.env.PORT || '3000', 10);
 
-serve({ fetch: handler.fetch, port });
+const httpServer = serve({ fetch: handler.fetch, port });
+let stopping = false;
+const shutdown = async () => {
+  if (stopping) {
+    return;
+  }
+  stopping = true;
+  const timeout = setTimeout(() => process.exit(1), 75000);
+  timeout.unref();
+  try {
+    await Promise.all([
+      stopSemogHost(),
+      new Promise((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve()))),
+    ]);
+    process.exit(0);
+  } catch {
+    console.error('Server shutdown failed.');
+    process.exit(1);
+  }
+};
+process.once('SIGTERM', () => {
+  void shutdown();
+});
+process.once('SIGINT', () => {
+  void shutdown();
+});

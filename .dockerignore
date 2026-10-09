@@ -28,6 +28,10 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+.env.*
+*.p12
+*.key
+.semog-piloto-*
 
 # turbo
 .turbo

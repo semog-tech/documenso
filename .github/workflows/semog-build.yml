@@ -5,9 +5,22 @@ on:
     branches: [leandrosemog/documenso-2.18]
   workflow_dispatch:
 
+concurrency:
+  group: semog-documenso-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  signing-checks:
+    uses: ./.github/workflows/semog-check.yml
+    permissions:
+      contents: read
+
   build-and-push:
+    needs: signing-checks
+    # A manual dispatch from another branch must not overwrite the release tag.
+    if: github.ref == 'refs/heads/leandrosemog/documenso-2.18'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -17,22 +30,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install dependencies for Semog patch tests
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Test Semog recipient patches
-        run: >-
-          node --test
-          apps/remix/app/utils/semog-recipient.test.mjs
-          apps/remix/app/utils/recipient-remark.test.mjs
-          apps/remix/app/utils/remark-page.test.mjs
-          packages/lib/client-only/hooks/load-signature-font.test.mjs
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -47,7 +44,11 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           push: true
+          platforms: linux/amd64
           provenance: false
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ghcr.io/semog-tech/documenso:2.18.0-semog
             ghcr.io/semog-tech/documenso:sha-${{ github.sha }}
