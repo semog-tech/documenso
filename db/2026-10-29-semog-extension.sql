@@ -2,9 +2,14 @@
 -- Aplicar depois de 2026-10-29-semog-partial-seal. Sem modelo Prisma novo.
 -- Papel: o dono das tabelas do Documenso, o mesmo da conexão Prisma privilegiada injetada no host
 -- (como nos pares irmãos). A tabela pertence a ele; RLS ligada sem FORCE e sem grant a outros papéis.
--- O gatilho de guarda é recriado com um único ramo novo: mudança só de expiresAt/expirationNotifiedAt de um
--- destinatário NOT_SIGNED, dentro da transação que gravou o recibo durável desta chave, para este envelope,
--- destinatário e instante exato. O restante da função é idêntico a 2026-10-06-semog-signing-execution.sql.
+-- O gatilho de guarda é recriado com um único ramo novo. Ele libera um UPDATE de Recipient somente quando:
+--   * o destinatário está NOT_SIGNED antes e depois, e só expiresAt/expirationNotifiedAt mudam;
+--   * semog_bridge.extension_key (set_config local à transação) é a chave de um recibo que lista este
+--     envelope e este destinatário e cujo expiraEm é exatamente o novo expiresAt (milissegundo, em UTC);
+--   * o recibo foi gravado pela própria transação: a coluna transacao guarda pg_current_xact_id() (xid8,
+--     com época, 64 bits, sem wraparound) e é comparada a pg_current_xact_id_if_assigned(). Uma sessão que
+--     faça SET para uma chave antiga não reaproveita o recibo para encurtar ou mover outro prazo.
+-- O restante da função é idêntico a 2026-10-06-semog-signing-execution.sql.
 BEGIN;
 CREATE TABLE semog_bridge.extension_receipts (
   "chaveOperacao" uuid PRIMARY KEY,
@@ -15,7 +20,9 @@ CREATE TABLE semog_bridge.extension_receipts (
   "expiraEm" timestamptz NOT NULL,
   hash text NOT NULL CHECK (hash ~ '^[a-f0-9]{64}$'),
   resultado jsonb NOT NULL CHECK (jsonb_typeof(resultado)='object'),
-  "criadoEm" timestamptz NOT NULL DEFAULT clock_timestamp()
+  "criadoEm" timestamptz NOT NULL DEFAULT clock_timestamp(),
+  -- Top-level transaction that wrote the receipt (also from a subtransaction); xid8 needs PostgreSQL 13+.
+  transacao xid8 NOT NULL DEFAULT pg_current_xact_id()
 );
 ALTER TABLE semog_bridge.extension_receipts ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON semog_bridge.extension_receipts FROM PUBLIC, semog_bridge_service;
@@ -26,6 +33,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,semog_bridge AS 
   SELECT COALESCE(current_setting('semog_bridge.extension_key',true),'')<>'' AND EXISTS(
     SELECT 1 FROM semog_bridge.extension_receipts r
     WHERE r."chaveOperacao"::text=current_setting('semog_bridge.extension_key',true)
+      AND r.transacao=pg_current_xact_id_if_assigned()
       AND r."envelopeId"=p_envelope AND p_recipient=ANY(r."recipientIds")
       AND (r."expiraEm" AT TIME ZONE 'UTC')=p_expires::timestamp);
 $$;

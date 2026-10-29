@@ -1,5 +1,8 @@
 /**
- * Disposable PostgreSQL rehearsal of the closing rounds (partial seal and, later, deadline extension).
+ * Disposable PostgreSQL rehearsal of the closing rounds (partial seal and deadline extension), including the
+ * guard-trigger branch and its mutants. Run it with vite-node and the lib Vitest config, which compiles the
+ * Lingui macros the native renderers use (plain tsx cannot):
+ *   node node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-rounds-local.ts
  * Uses local PostgreSQL binaries instead of Docker: SEMOG_PG_BIN (default /opt/homebrew/bin) and an
  * optional SEMOG_PG_PARENT for the throwaway data directory. Never reads .env; removes everything at exit.
  */
@@ -14,6 +17,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { createSemogHost } from '../packages/lib/server-only/semog-signing/host';
 import { createSemogPdfReader } from '../packages/lib/server-only/semog-signing/initial-pdf';
 import { createSemogPartialSealService } from '../packages/lib/server-only/semog-signing/partial-seal-service';
+import { readSemogRefusal } from '../packages/lib/server-only/semog-signing/route-refusal';
 import { createSemogSigningRuntime } from '../packages/lib/server-only/semog-signing/runtime';
 
 const workspace = process.cwd();
@@ -441,6 +445,231 @@ const roundsScenario = async (database: PrismaClient, owner: Team, services: Ser
   check(await rejects(() => sql(down)), 'extension down refuses while receipts exist');
 };
 
+const EXTENSION_SQL = 'db/2026-10-29-semog-extension.sql';
+const GUARD_EXPIRY = '2099-01-01T02:59:59.000Z';
+type GuardFixture = { envelopeId: string; teamId: number; userId: number; open: number; other: number; signed: number };
+const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+/** One transaction: optional capability, optional receipt written in it, then the Recipient update. */
+const guardStatement = (
+  fixture: GuardFixture,
+  options: { key?: string; receipt?: { key: string; ids: number[] }; recipient: number; set: string },
+) => `BEGIN;
+${options.key === undefined ? '' : `SELECT set_config('semog_bridge.extension_key',${literal(options.key)},true);`}
+${
+  options.receipt
+    ? `INSERT INTO semog_bridge.extension_receipts ("chaveOperacao","envelopeId","teamId","userId","recipientIds","expiraEm",hash,resultado)
+  VALUES (${literal(options.receipt.key)}::uuid,${literal(fixture.envelopeId)},${fixture.teamId},${fixture.userId},
+  ARRAY[${options.receipt.ids.join(',')}]::integer[],${literal(GUARD_EXPIRY)}::timestamptz,${literal('a'.repeat(64))},'{}'::jsonb);`
+    : ''
+}
+UPDATE public."Recipient" SET ${options.set} WHERE id=${options.recipient};
+ROLLBACK;`;
+const allowed = async (statement: string) => !(await rejects(() => sql(statement)));
+
+/** Each case: does the guard let the update through? Expected values are the contract of the new branch. */
+const guardCases = async (fixture: GuardFixture, oldKey: string) => {
+  const key = randomUUID();
+  const own = { key, receipt: { key, ids: [fixture.open, fixture.signed] } };
+  const exact = `"expiresAt"='2099-01-01 02:59:59.000',"expirationNotifiedAt"=NULL`;
+  return {
+    'exact value, own receipt (allowed)': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.open, set: exact }),
+    ),
+    'off by 1 ms': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.open, set: `"expiresAt"='2099-01-01 02:59:59.001'` }),
+    ),
+    'recipient not in receipt': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.other, set: exact }),
+    ),
+    'SIGNED recipient in receipt': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.signed, set: exact }),
+    ),
+    'expiresAt + name': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.open, set: `${exact},name='Outro nome'` }),
+    ),
+    'expiresAt + signingStatus': await allowed(
+      guardStatement(fixture, {
+        ...own,
+        recipient: fixture.open,
+        set: `${exact},"signingStatus"='SIGNED',"signedAt"=now()`,
+      }),
+    ),
+    'expiresAt to NULL': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.open, set: `"expiresAt"=NULL` }),
+    ),
+    'non-UUID key': await allowed(
+      guardStatement(fixture, { key: 'not-a-uuid', receipt: own.receipt, recipient: fixture.open, set: exact }),
+    ),
+    'receipt from an earlier transaction': await allowed(
+      guardStatement(fixture, { key: oldKey, recipient: fixture.open, set: exact }),
+    ),
+    'native: email change with a valid receipt': await allowed(
+      guardStatement(fixture, { ...own, recipient: fixture.open, set: `email='outro@example.invalid'` }),
+    ),
+    'native: expiresAt without capability': await allowed(
+      guardStatement(fixture, { recipient: fixture.open, set: exact }),
+    ),
+    'native: readStatus change (allowed)': await allowed(
+      guardStatement(fixture, { recipient: fixture.open, set: `"readStatus"='NOT_OPENED'` }),
+    ),
+  };
+};
+type GuardCase = keyof Awaited<ReturnType<typeof guardCases>>;
+const ALLOWED_CASES: GuardCase[] = ['exact value, own receipt (allowed)', 'native: readStatus change (allowed)'];
+
+const extractBlock = (text: string, start: string, end: string) => {
+  const from = text.indexOf(start);
+  const to = text.indexOf(end, from);
+  if (from < 0 || to < 0) {
+    throw new Error(`block not found: ${start}`);
+  }
+  return text.slice(from, to + end.length);
+};
+const mutate = (text: string, target: string, replacement: string) => {
+  if (text.split(target).length !== 2) {
+    throw new Error(`mutant target not unique: ${target}`);
+  }
+  return text.replace(target, replacement);
+};
+
+const guardScenario = async (database: PrismaClient, owner: Team) => {
+  const envelope = await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z'));
+  await database.$transaction((tx) => signNatively(tx, envelope.recipients[2]));
+  const [open, other, signed, armed] = [0, 1, 2, 4].map((index) => envelope.recipients[index].recipient.id);
+  const fixture = {
+    envelopeId: envelope.envelopeId,
+    teamId: owner.team.id,
+    userId: owner.user.id,
+    open,
+    other,
+    signed,
+  };
+  // A live snapshot arms the guard for this envelope.
+  await sql(`INSERT INTO semog_bridge.snapshots (id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+    VALUES (gen_random_uuid(),${owner.team.id},${literal(envelope.envelopeId)},${armed},${literal('a'.repeat(64))},${literal('a'.repeat(64))},${literal('a'.repeat(64))},now()+interval '1 day','{}'::jsonb)`);
+  const oldKey = randomUUID();
+  await sql(`INSERT INTO semog_bridge.extension_receipts ("chaveOperacao","envelopeId","teamId","userId","recipientIds","expiraEm",hash,resultado)
+    VALUES (${literal(oldKey)}::uuid,${literal(envelope.envelopeId)},${owner.team.id},${owner.user.id},ARRAY[${open}]::integer[],${literal(GUARD_EXPIRY)}::timestamptz,${literal('a'.repeat(64))},'{}'::jsonb)`);
+  const results = await guardCases(fixture, oldKey);
+  for (const [name, wasAllowed] of Object.entries(results)) {
+    check(wasAllowed === ALLOWED_CASES.includes(name as GuardCase), `guard: ${name}`);
+  }
+  const dormant = await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z'));
+  check(
+    await allowed(
+      `UPDATE public."Recipient" SET "expiresAt"='2099-01-01 00:00:00' WHERE id=${dormant.recipients[0].recipient.id}`,
+    ),
+    'guard: dormant without live snapshots (native behaviour unchanged)',
+  );
+  await mutantScenario(fixture, oldKey);
+};
+
+/** Each mutant of the new branch must be killed by the case written for it, then the original is restored. */
+const mutantScenario = async (fixture: GuardFixture, oldKey: string) => {
+  const up = await readFile(resolve(workspace, EXTENSION_SQL), 'utf8');
+  const allows = extractBlock(up, 'CREATE FUNCTION semog_bridge.extension_allows', '$$;').replace(
+    'CREATE FUNCTION',
+    'CREATE OR REPLACE FUNCTION',
+  );
+  const guard = extractBlock(up, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
+  const mutants: { name: string; guard?: string; allows?: string; killer: GuardCase }[] = [
+    {
+      name: 'other columns allowed with expiresAt',
+      guard: mutate(
+        guard,
+        "AND (after-ARRAY['expiresAt','expirationNotifiedAt'])=(before-ARRAY['expiresAt','expirationNotifiedAt'])",
+        '',
+      ),
+      killer: 'expiresAt + name',
+    },
+    {
+      name: 'NOT_SIGNED condition dropped',
+      guard: mutate(
+        guard,
+        "TG_OP='UPDATE' AND before->>'signingStatus'='NOT_SIGNED' AND after->>'signingStatus'='NOT_SIGNED'",
+        "TG_OP='UPDATE'",
+      ),
+      killer: 'SIGNED recipient in receipt',
+    },
+    {
+      name: 'extension_allows ignores the recipient',
+      allows: mutate(allows, ' AND p_recipient=ANY(r."recipientIds")', ''),
+      killer: 'recipient not in receipt',
+    },
+    {
+      name: 'extension_allows ignores the instant',
+      allows: mutate(allows, `(r."expiraEm" AT TIME ZONE 'UTC')=p_expires::timestamp`, 'true'),
+      killer: 'off by 1 ms',
+    },
+    {
+      name: 'extension_allows ignores the instant (NULL)',
+      allows: mutate(allows, `(r."expiraEm" AT TIME ZONE 'UTC')=p_expires::timestamp`, 'true'),
+      killer: 'expiresAt to NULL',
+    },
+    {
+      name: 'extension_allows ignores the key',
+      allows: mutate(allows, `r."chaveOperacao"::text=current_setting('semog_bridge.extension_key',true)`, 'true'),
+      killer: 'non-UUID key',
+    },
+    {
+      name: 'extension_allows accepts receipts of other transactions',
+      allows: mutate(allows, 'r.transacao=pg_current_xact_id_if_assigned()', 'true'),
+      killer: 'receipt from an earlier transaction',
+    },
+  ];
+  for (const mutant of mutants) {
+    await sql(`${mutant.guard ?? ''}\n${mutant.allows ?? ''}`);
+    const results = await guardCases(fixture, oldKey);
+    await sql(`${guard}\n${allows}`);
+    check(results[mutant.killer], `mutant killed: ${mutant.name} (by "${mutant.killer}")`);
+  }
+  const restored = await guardCases(fixture, oldKey);
+  check(
+    Object.entries(restored).every(([name, wasAllowed]) => wasAllowed === ALLOWED_CASES.includes(name as GuardCase)),
+    'guard restored after the mutants',
+  );
+};
+
+const refusalCode = async (fn: () => Promise<unknown>) => {
+  try {
+    await fn();
+    return 'ok';
+  } catch (error) {
+    return readSemogRefusal(error)?.codigo ?? 'other';
+  }
+};
+/** The same key on two envelopes at once: one wins, the other gets the reused-key 409 (never a 503). */
+const sharedKeyScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const runtime = createSemogSigningRuntime({ enabled: true, client: database });
+  const [first, second] = [
+    await createEnvelope(database, owner, new Date(Date.now() + 86400000)),
+    await createEnvelope(database, owner, new Date(Date.now() + 86400000)),
+  ];
+  const sealKey = randomUUID();
+  const seals = await Promise.all(
+    [first, second].map((envelope) =>
+      refusalCode(() =>
+        services.partialSeal.create(owner.actor, envelope.envelopeId, { rodada: 1, chaveOperacao: sealKey }),
+      ),
+    ),
+  );
+  check(seals.sort().join(',') === 'chave-reutilizada,ok', `partial seal: shared key → ${seals.join(', ')}`);
+  const extensionKey = randomUUID();
+  const expiraEm = new Date(Date.now() + 2 * 86400000).toISOString();
+  const extensions = await Promise.all(
+    [first, second].map((envelope) =>
+      refusalCode(() =>
+        runtime.extension.create(owner.actor, envelope.envelopeId, {
+          chaveOperacao: extensionKey,
+          recipientIds: [envelope.recipients[0].recipient.id],
+          expiraEm,
+        }),
+      ),
+    ),
+  );
+  check(extensions.sort().join(',') === 'chave-reutilizada,ok', `extension: shared key → ${extensions.join(', ')}`);
+};
+
 const createServices = async (database: PrismaClient, actor: Team['actor']) => {
   const signer = await P12Signer.create(await readFile(resolve(workspace, 'apps/remix/example/cert.p12')), '', {
     buildChain: false,
@@ -469,8 +698,10 @@ try {
   // Native renderers read fonts and the logo from the remix app directory.
   process.chdir(resolve(workspace, 'apps/remix'));
   const services = await createServices(client, owner.actor);
+  await guardScenario(client, owner);
   await staleSnapshotScenario(client, owner, services);
   await concurrentRoundScenario(client, owner, services);
+  await sharedKeyScenario(client, owner, services);
   await roundsScenario(client, owner, services);
 } finally {
   process.chdir(workspace);

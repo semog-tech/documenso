@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { createSemogExtensionHandler } from './extension-http';
 import {
@@ -144,6 +145,106 @@ describe('Semog deadline extension', () => {
   });
 });
 
+const refusal = (codigo: string, destinatarios?: { recipientId: number; motivo: string }[]) => ({
+  statusCode: 409,
+  semogRefusal: destinatarios ? { codigo, destinatarios } : { codigo },
+});
+describe('Semog deadline extension refusal details', () => {
+  it('names every ineligible recipient with a stable reason, in one answer', async () => {
+    const fixture = createSemogExtensionFixture();
+    fixture.envelope.recipients.push({ ...fixture.envelope.recipients[0], id: 15, token: 'token-15' });
+    Object.assign(fixture.envelope.recipients[5], { expiresAt: null });
+    await expect(
+      fixture.service.create(fixture.actor, 'env', { ...body, recipientIds: [10, 11, 12, 13, 15, 99] }),
+    ).rejects.toMatchObject(
+      refusal('destinatarios-inelegiveis', [
+        { recipientId: 11, motivo: 'ja-assinou' },
+        { recipientId: 12, motivo: 'nao-signatario' },
+        { recipientId: 13, motivo: 'operacao-existente' },
+        { recipientId: 15, motivo: 'sem-prazo' },
+        { recipientId: 99, motivo: 'nao-encontrado' },
+      ]),
+    );
+    expect(fixture.tx.recipient.updateMany).not.toHaveBeenCalled();
+  });
+  it('refuses a CC even with a non-null expiresAt: the role check fires', async () => {
+    const fixture = createSemogExtensionFixture();
+    Object.assign(fixture.envelope.recipients[2], { expiresAt: '2097-01-01T00:00:00.000Z' });
+    await expect(fixture.service.create(fixture.actor, 'env', { ...body, recipientIds: [12] })).rejects.toMatchObject(
+      refusal('destinatarios-inelegiveis', [{ recipientId: 12, motivo: 'nao-signatario' }]),
+    );
+  });
+  it('refuses a recipient without a deadline', async () => {
+    const fixture = createSemogExtensionFixture();
+    Object.assign(fixture.envelope.recipients[0], { expiresAt: null });
+    await expect(fixture.service.create(fixture.actor, 'env', { ...body, recipientIds: [10] })).rejects.toMatchObject(
+      refusal('destinatarios-inelegiveis', [{ recipientId: 10, motivo: 'sem-prazo' }]),
+    );
+  });
+  it('refuses a deadline that does not move forward', async () => {
+    const fixture = createSemogExtensionFixture();
+    await expect(
+      fixture.service.create(fixture.actor, 'env', { ...body, expiraEm: '2097-12-31T23:59:59.000-03:00' }),
+    ).rejects.toMatchObject(
+      refusal('destinatarios-inelegiveis', [
+        { recipientId: 10, motivo: 'prazo-nao-avanca' },
+        { recipientId: 14, motivo: 'prazo-nao-avanca' },
+      ]),
+    );
+  });
+  it('refuses an envelope with a REJECTED recipient', async () => {
+    const fixture = createSemogExtensionFixture();
+    Object.assign(fixture.envelope.recipients[3], { signingStatus: 'REJECTED' });
+    await expect(fixture.service.create(fixture.actor, 'env', body)).rejects.toMatchObject(
+      refusal('envelope-com-recusa'),
+    );
+  });
+  it('refuses a non-PENDING envelope and a past deadline with their own codes', async () => {
+    const closed = createSemogExtensionFixture();
+    Object.assign(closed.envelope, { status: 'COMPLETED' });
+    await expect(closed.service.create(closed.actor, 'env', body)).rejects.toMatchObject(
+      refusal('envelope-nao-pendente'),
+    );
+    const past = createSemogExtensionFixture();
+    for (const recipient of past.envelope.recipients) {
+      Object.assign(recipient, { expiresAt: '2020-01-01T00:00:00.000Z' });
+    }
+    await expect(
+      past.service.create(past.actor, 'env', { ...body, expiraEm: '2021-01-01T00:00:00.000Z' }),
+    ).rejects.toMatchObject(refusal('prazo-no-passado'));
+  });
+  it('names the missing recipient whose live enrollment blocks the batch', async () => {
+    const fixture = createSemogExtensionFixture();
+    fixture.state.snapshots.push({
+      id: 's-14',
+      recipientId: 14,
+      expiraEm: '2098-01-01T00:00:00.000Z',
+      revogadaEm: null,
+    });
+    await expect(fixture.service.create(fixture.actor, 'env', { ...body, recipientIds: [10] })).rejects.toMatchObject(
+      refusal('destinatarios-inelegiveis', [{ recipientId: 14, motivo: 'inscricao-vigente' }]),
+    );
+  });
+  it('answers a reused key with another body, or a key taken by another envelope, as chave-reutilizada', async () => {
+    const fixture = createSemogExtensionFixture();
+    await fixture.service.create(fixture.actor, 'env', body);
+    await expect(fixture.service.create(fixture.actor, 'env', { ...body, recipientIds: [10] })).rejects.toMatchObject(
+      refusal('chave-reutilizada'),
+    );
+    const racing = createSemogExtensionFixture();
+    racing.tx.$executeRaw.mockImplementationOnce(() =>
+      Promise.reject(
+        new Prisma.PrismaClientKnownRequestError('duplicate key', {
+          code: 'P2010',
+          clientVersion: 'test',
+          meta: { code: '23505' },
+        }),
+      ),
+    );
+    await expect(racing.service.create(racing.actor, 'env', body)).rejects.toMatchObject(refusal('chave-reutilizada'));
+  });
+});
+
 describe('Semog deadline extension HTTP boundary', () => {
   const url = 'https://local.invalid/api/semog/v1/envelopes/env/prorrogacoes';
   const post = (payload: string, headers: Record<string, string> = {}, target = url) =>
@@ -177,6 +278,18 @@ describe('Semog deadline extension HTTP boundary', () => {
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get('cache-control')).toBe('no-store');
     expect(fake.create).toHaveBeenCalledWith({ teamId: 1, userId: 2 }, 'env', body);
+  });
+  it('returns the refusal code and recipients, nothing else', async () => {
+    const fixture = createSemogExtensionFixture();
+    const response = await createSemogExtensionHandler(fixture.service)(
+      post(JSON.stringify({ ...body, recipientIds: [13, 10] })),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'Solicitação não autorizada ou inválida.',
+      codigo: 'destinatarios-inelegiveis',
+      destinatarios: [{ recipientId: 13, motivo: 'operacao-existente' }],
+    });
   });
   it('sanitizes native failures', async () => {
     const fake = service();

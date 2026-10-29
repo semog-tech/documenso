@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppErrorCode } from '../../errors/app-error';
 import type { SemogPartialSealRequest, SemogPartialSealResult, SemogPartialSealSigner } from './partial-seal-contract';
 import { ZSemogPartialSealResult, ZSemogPartialSealSigners } from './partial-seal-contract';
+import { semogRefusal } from './route-refusal';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
@@ -66,7 +67,10 @@ export const readSemogPartialSealReplay = async (
     row.data.rodada !== input.rodada ||
     row.data.chaveOperacao !== input.chaveOperacao
   ) {
-    throw partialSealConflict();
+    const sameRound = row.success && row.data.envelopeId === envelopeId && row.data.rodada === input.rodada;
+    throw semogRefusal({
+      codigo: sameRound && row.data.chaveOperacao !== input.chaveOperacao ? 'rodada-ja-selada' : 'chave-reutilizada',
+    });
   }
   return toResult(row.data);
 };

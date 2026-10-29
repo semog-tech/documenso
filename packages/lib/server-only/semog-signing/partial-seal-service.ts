@@ -18,6 +18,7 @@ import {
   readSemogPartialSealReplay,
   saveSemogPartialSeal,
 } from './partial-seal-repository';
+import { isSemogUniqueViolation, semogRefusal } from './route-refusal';
 import type { SemogSealingEnvelope } from './sealing';
 import { decorateSemogPdf, readSemogSealingEnvelope, stampSemogPartialSeal } from './sealing';
 import type { SemogActor } from './service';
@@ -186,6 +187,10 @@ export const createSemogPartialSealService = (dependencies: Dependencies) => {
             maxWait: 10000,
           });
         } catch (error) {
+          if (isSemogUniqueViolation(error)) {
+            // Same key committed meanwhile by a seal of another envelope: the same answer as a reused key.
+            throw semogRefusal({ codigo: 'chave-reutilizada' });
+          }
           // Deadlocks (40P01) are retried; the losing attempt wrote nothing.
           if (attempt === 2 || !isSemogRetryableTransactionError(error)) {
             throw error;

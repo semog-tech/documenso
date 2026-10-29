@@ -14,6 +14,8 @@ import {
   recordSemogExtension,
 } from './extension-repository';
 import { assertSemogPartialSealManaged } from './partial-seal-repository';
+import type { SemogRefusedRecipient } from './route-refusal';
+import { isSemogUniqueViolation, semogRefusal } from './route-refusal';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
@@ -37,50 +39,72 @@ const lockEnvelope = async (tx: Prisma.TransactionClient, actor: SemogActor, env
 };
 type Envelope = Awaited<ReturnType<typeof lockEnvelope>>;
 
-/** Each target must still be able to sign through the bridge, and the new deadline must move it forward. */
-const assertTargets = (envelope: Envelope, request: Request, operations: Set<number>, now: Date) => {
+const refusedReason = (
+  recipient: Envelope['recipients'][number] | undefined,
+  operations: Set<number>,
+  expiry: number,
+): SemogRefusedRecipient['motivo'] | null => {
+  if (!recipient) {
+    return 'nao-encontrado';
+  }
+  if (recipient.role !== 'SIGNER') {
+    return 'nao-signatario';
+  }
+  if (recipient.signingStatus !== 'NOT_SIGNED') {
+    return 'ja-assinou';
+  }
+  // Kept out on purpose: the unique (envelopeId, recipientId) on operations would block a new signature anyway.
+  if (operations.has(recipient.id)) {
+    return 'operacao-existente';
+  }
+  if (recipient.expiresAt === null) {
+    return 'sem-prazo';
+  }
+  return recipient.expiresAt.getTime() >= expiry ? 'prazo-nao-avanca' : null;
+};
+
+/** Envelope-level gates first; then every target is checked so one answer names all ineligible recipients. */
+const listRefusedTargets = (envelope: Envelope, request: Request, operations: Set<number>, now: Date) => {
   const expiry = Date.parse(request.expiraEm);
-  if (
-    envelope.status !== 'PENDING' ||
-    envelope.recipients.some((recipient) => recipient.signingStatus === 'REJECTED') ||
-    expiry <= now.getTime()
-  ) {
-    throw extensionConflict();
+  if (envelope.status !== 'PENDING') {
+    throw semogRefusal({ codigo: 'envelope-nao-pendente' });
   }
-  for (const id of request.recipientIds) {
-    const recipient = envelope.recipients.find((candidate) => candidate.id === id);
-    if (
-      !recipient ||
-      recipient.role !== 'SIGNER' ||
-      recipient.signingStatus !== 'NOT_SIGNED' ||
-      operations.has(id) ||
-      recipient.expiresAt === null ||
-      recipient.expiresAt.getTime() >= expiry
-    ) {
-      throw extensionConflict();
-    }
+  if (envelope.recipients.some((recipient) => recipient.signingStatus === 'REJECTED')) {
+    throw semogRefusal({ codigo: 'envelope-com-recusa' });
   }
+  if (expiry <= now.getTime()) {
+    throw semogRefusal({ codigo: 'prazo-no-passado' });
+  }
+  return request.recipientIds.flatMap((id): SemogRefusedRecipient[] => {
+    const motivo = refusedReason(
+      envelope.recipients.find((candidate) => candidate.id === id),
+      operations,
+      expiry,
+    );
+    return motivo ? [{ recipientId: id, motivo }] : [];
+  });
 };
 
 /**
  * Recipient.expiresAt is part of every enrollment snapshot. Moving the deadline of a recipient outside a
  * live enrollment of someone else would make that enrollment's pending signature fail its hash check.
  */
-const assertNoLiveForeignEnrollment = async (tx: Prisma.TransactionClient, envelope: Envelope, request: Request) => {
+const listLiveForeignEnrollments = async (tx: Prisma.TransactionClient, envelope: Envelope, request: Request) => {
   const missing = new Set(
     envelope.recipients
       .filter((recipient) => recipient.role === 'SIGNER' && recipient.signingStatus === 'NOT_SIGNED')
       .map((recipient) => recipient.id),
   );
   const snapshots = await readSemogActiveSnapshots(tx, envelope.id);
-  if (
-    snapshots.some(
+  const blocking = snapshots
+    .filter(
       (snapshot) =>
         snapshot.vigente && missing.has(snapshot.recipientId) && !request.recipientIds.includes(snapshot.recipientId),
     )
-  ) {
-    throw extensionConflict();
-  }
+    .map((snapshot) => snapshot.recipientId);
+  return [...new Set(blocking)].map(
+    (recipientId): SemogRefusedRecipient => ({ recipientId, motivo: 'inscricao-vigente' }),
+  );
 };
 
 const applyExtension = async (
@@ -134,8 +158,13 @@ const extendLocked = async (
     return replay;
   }
   const operations = await readSemogOperationRecipients(tx, request.envelopeId);
-  assertTargets(envelope, request, operations, (dependencies.now ?? (() => new Date()))());
-  await assertNoLiveForeignEnrollment(tx, envelope, request);
+  const refused = [
+    ...listRefusedTargets(envelope, request, operations, (dependencies.now ?? (() => new Date()))()),
+    ...(await listLiveForeignEnrollments(tx, envelope, request)),
+  ].sort((a, b) => a.recipientId - b.recipientId);
+  if (refused.length > 0) {
+    throw semogRefusal({ codigo: 'destinatarios-inelegiveis', destinatarios: refused });
+  }
   return await applyExtension(tx, actor, envelope, request);
 };
 
@@ -169,6 +198,10 @@ export const createSemogExtensionService = (dependencies: Dependencies) => {
             maxWait: 10000,
           });
         } catch (error) {
+          if (isSemogUniqueViolation(error)) {
+            // Same key committed meanwhile for another envelope: the same answer as a reused key.
+            throw semogRefusal({ codigo: 'chave-reutilizada' });
+          }
           if (attempt === 2 || !isSemogRetryableTransactionError(error)) {
             throw error;
           }

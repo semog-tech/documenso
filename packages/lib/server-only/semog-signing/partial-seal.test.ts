@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PDF } from '@libpdf/core';
+import { Prisma } from '@prisma/client';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { semogPartialSealLabel } from './partial-seal-contract';
@@ -181,13 +182,14 @@ describe('Semog partial seal of a PENDING envelope (2 of 5)', () => {
   it('rejects a key reused for another round or another key for the same round', async () => {
     await expect(fixture.service.create(fixture.actor, 'env_partial', { ...body, rodada: 2 })).rejects.toMatchObject({
       statusCode: 409,
+      semogRefusal: { codigo: 'chave-reutilizada' },
     });
     await expect(
       fixture.service.create(fixture.actor, 'env_partial', {
         ...body,
         chaveOperacao: '0f0d2b6c-7c44-4d0e-9a39-0ad8c3f0d8a1',
       }),
-    ).rejects.toMatchObject({ statusCode: 409 });
+    ).rejects.toMatchObject({ statusCode: 409, semogRefusal: { codigo: 'rodada-ja-selada' } });
   });
 });
 
@@ -240,6 +242,24 @@ describe('Semog partial seal refusals', () => {
       }
     }, 409);
   });
+  it('answers a key already taken by a concurrent seal of another envelope as chave-reutilizada', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix'));
+    const fixture = await createSemogPartialSealFixture();
+    fixture.store.tx.$executeRaw.mockImplementationOnce(() =>
+      Promise.reject(
+        new Prisma.PrismaClientKnownRequestError('duplicate key', {
+          code: 'P2010',
+          clientVersion: 'test',
+          meta: { code: '23505' },
+        }),
+      ),
+    );
+    await expect(fixture.service.create(fixture.actor, 'env_partial', body)).rejects.toMatchObject({
+      statusCode: 409,
+      semogRefusal: { codigo: 'chave-reutilizada' },
+    });
+    vi.restoreAllMocks();
+  }, 60000);
   it('refuses malformed bodies before any transaction', async () => {
     const fixture = await createSemogPartialSealFixture();
     for (const invalid of [

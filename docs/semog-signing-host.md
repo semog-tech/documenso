@@ -48,7 +48,36 @@ mudar o prazo dele quebraria a assinatura pendente desse outro. O progresso de
 outros signatários (status, campos) já fica fora do snapshot em ordem paralela, então
 reinscrever depois que outros assinaram é compatível. A migração recria o gatilho de
 guarda com um único ramo novo, que só libera a troca de `expiresAt` dentro da
-transação que gravou o recibo daquela chave, para aquele destinatário e instante.
+transação que gravou o recibo daquela chave (comparando o `xid8` gravado no recibo
+com a transação corrente), para aquele destinatário e instante exato. O ensaio
+local fixa esse ramo caso a caso e mata um mutante para cada condição.
+
+Recusas 409 das rotas de envelope (`selos-parciais` e `prorrogacoes`) trazem um
+código estável e, quando for por destinatário, quem e por quê; nada de detalhe
+interno:
+
+```json
+{
+  "error": "Solicitação não autorizada ou inválida.",
+  "codigo": "destinatarios-inelegiveis",
+  "destinatarios": [{ "recipientId": 13, "motivo": "operacao-existente" }]
+}
+```
+
+`codigo`: `chave-reutilizada` (mesma chave com outro corpo, ou chave já gravada por
+outra requisição, inclusive de outro envelope, em vez do antigo 503),
+`rodada-ja-selada` (selo parcial: rodada já selada com outra chave),
+`envelope-nao-pendente`, `envelope-com-recusa`, `prazo-no-passado` e
+`destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
+inelegíveis de uma vez, em ordem de `recipientId`, com `motivo`: `nao-encontrado`,
+`nao-signatario` (CC e outros papéis), `ja-assinou`, `operacao-existente`,
+`sem-prazo` (`expiresAt` nulo), `prazo-nao-avanca` e `inscricao-vigente` (faltante
+fora do pedido com inscrição vigente; ele precisa entrar no pedido ou a inscrição
+vencer). Quem tem operação na ponte nunca é prorrogado: a unicidade
+`(envelopeId, recipientId)` de `operations` o impediria de assinar de novo. O
+semogapp pode repetir o pedido sem esses destinatários e sinalizá-los para
+tratamento manual. Os demais 409 (estado não selável do selo parcial) seguem sem
+corpo extra.
 
 Para habilitar depois de revisão e aplicação autorizada das migrações:
 

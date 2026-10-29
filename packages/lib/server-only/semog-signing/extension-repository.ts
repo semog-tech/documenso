@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { SemogExtensionResult } from './extension-contract';
 import { ZSemogExtensionResult } from './extension-contract';
 import { partialSealConflict } from './partial-seal-repository';
+import { semogRefusal } from './route-refusal';
 import type { SemogActor } from './service';
 
 export const extensionConflict = partialSealConflict;
@@ -28,7 +29,7 @@ export const readSemogExtensionReplay = async (
     rows[0].hash !== hash ||
     !result.success
   ) {
-    throw extensionConflict();
+    throw semogRefusal({ codigo: 'chave-reutilizada' });
   }
   return result.data;
 };

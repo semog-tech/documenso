@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { readSemogBoundedJsonBody, semogDraftJsonResponse } from './draft-http';
+import { readSemogRefusal } from './route-refusal';
 import { semogError } from './service-validation';
 
 /** Shared by the per-envelope bridge routes (selos-parciais, prorrogacoes): same transport and errors. */
@@ -31,8 +32,9 @@ export const semogRouteErrorResponse = (error: unknown) => {
       : error instanceof AppError && [400, 401, 404, 409, 413, 503].includes(error.statusCode ?? 0)
         ? (error.statusCode ?? 503)
         : 503;
+  const refusal = status === 409 ? readSemogRefusal(error) : null;
   return semogDraftJsonResponse(
-    { error: status === 503 ? 'Ponte indisponível.' : 'Solicitação não autorizada ou inválida.' },
+    { error: status === 503 ? 'Ponte indisponível.' : 'Solicitação não autorizada ou inválida.', ...refusal },
     status,
   );
 };
