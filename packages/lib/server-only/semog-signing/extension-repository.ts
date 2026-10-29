@@ -1,12 +1,30 @@
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
+import { AppErrorCode } from '../../errors/app-error';
 import type { SemogExtensionResult } from './extension-contract';
 import { ZSemogExtensionResult } from './extension-contract';
 import { partialSealConflict } from './partial-seal-repository';
 import { semogRefusal } from './route-refusal';
 import type { SemogActor } from './service';
+import { semogError } from './service-validation';
 
 export const extensionConflict = partialSealConflict;
+
+/** Envelope row lock scoped to the team, then the recipients as of after the lock (Read Committed). */
+export const lockSemogEnvelopeWithRecipients = async (
+  tx: Prisma.TransactionClient,
+  actor: SemogActor,
+  envelopeId: string,
+) => {
+  const lock = await tx.$queryRaw<{ id: string }[]>(
+    Prisma.sql`SELECT id FROM public."Envelope" WHERE id=${envelopeId} AND "teamId"=${actor.teamId} FOR UPDATE`,
+  );
+  if (lock.length !== 1) {
+    throw semogError(AppErrorCode.NOT_FOUND, 404);
+  }
+  return await tx.envelope.findFirstOrThrow({ where: { id: envelopeId }, include: { recipients: true } });
+};
+export type SemogLockedEnvelope = Awaited<ReturnType<typeof lockSemogEnvelopeWithRecipients>>;
 
 export const readSemogExtensionReplay = async (
   tx: Prisma.TransactionClient,

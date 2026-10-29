@@ -1,6 +1,8 @@
 import type { Signer } from '@libpdf/core';
 import type { PrismaClient } from '@prisma/client';
 import { createSemogApiTokenAuthenticator } from './api-token';
+import { createSemogContactHandler } from './contact-http';
+import { createSemogContactService } from './contact-service';
 import type { SemogDocumentI18n } from './document-pages';
 import { createSemogPrismaExecutor } from './execution';
 import { createSemogExtensionHandler } from './extension-http';
@@ -77,6 +79,12 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     client,
     authenticate: createSemogApiTokenAuthenticator(client),
   });
+  const contact = createSemogContactService({
+    enabled,
+    client,
+    readPdf,
+    authenticate: createSemogApiTokenAuthenticator(client),
+  });
   const outbox = createSemogOutboxWorker({
     enabled,
     client,
@@ -87,12 +95,14 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     handler: createSemogSigningHandler(service),
     partialSealHandler: createSemogPartialSealHandler(partialSeal),
     extensionHandler: createSemogExtensionHandler(extension),
+    contactHandler: createSemogContactHandler(contact),
     service,
     repository,
     executor,
     sealer,
     partialSeal,
     extension,
+    contact,
     outbox,
   };
 };

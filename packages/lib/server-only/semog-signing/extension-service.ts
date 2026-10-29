@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { AppErrorCode } from '../../errors/app-error';
 import { DOCUMENT_AUDIT_LOG_TYPE } from '../../types/document-audit-logs';
@@ -6,8 +6,10 @@ import { createDocumentAuditLogData } from '../../utils/document-audit-logs';
 import type { SemogPrismaTransactionRunner } from './execution';
 import { isSemogRetryableTransactionError } from './execution';
 import { normalizeSemogExtension, ZSemogExtensionRequest } from './extension-contract';
+import type { SemogLockedEnvelope } from './extension-repository';
 import {
   extensionConflict,
+  lockSemogEnvelopeWithRecipients,
   readSemogActiveSnapshots,
   readSemogExtensionReplay,
   readSemogOperationRecipients,
@@ -28,16 +30,7 @@ type Dependencies = {
 type Request = ReturnType<typeof normalizeSemogExtension> & { chaveOperacao: string; envelopeId: string };
 const ZEnvelopeId = z.string().min(1).max(255);
 
-const lockEnvelope = async (tx: Prisma.TransactionClient, actor: SemogActor, envelopeId: string) => {
-  const lock = await tx.$queryRaw<{ id: string }[]>(
-    Prisma.sql`SELECT id FROM public."Envelope" WHERE id=${envelopeId} AND "teamId"=${actor.teamId} FOR UPDATE`,
-  );
-  if (lock.length !== 1) {
-    throw semogError(AppErrorCode.NOT_FOUND, 404);
-  }
-  return await tx.envelope.findFirstOrThrow({ where: { id: envelopeId }, include: { recipients: true } });
-};
-type Envelope = Awaited<ReturnType<typeof lockEnvelope>>;
+type Envelope = SemogLockedEnvelope;
 
 const refusedReason = (
   recipient: Envelope['recipients'][number] | undefined,
@@ -151,7 +144,7 @@ const extendLocked = async (
   actor: SemogActor,
   request: Request,
 ) => {
-  const envelope = await lockEnvelope(tx, actor, request.envelopeId);
+  const envelope = await lockSemogEnvelopeWithRecipients(tx, actor, request.envelopeId);
   await assertSemogPartialSealManaged(tx, actor, request.envelopeId);
   const replay = await readSemogExtensionReplay(tx, actor, request.envelopeId, request.chaveOperacao, request.hash);
   if (replay) {

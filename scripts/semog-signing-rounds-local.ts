@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { P12Signer, PDF } from '@libpdf/core';
 import { setupI18n } from '@lingui/core';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { createSemogHost } from '../packages/lib/server-only/semog-signing/host';
 import { createSemogPdfReader } from '../packages/lib/server-only/semog-signing/initial-pdf';
 import { createSemogPartialSealService } from '../packages/lib/server-only/semog-signing/partial-seal-service';
@@ -100,6 +101,14 @@ const startDatabase = async () => {
     'extension down removes the receipts table',
   );
   await sql(await readFile('db/2026-10-29-semog-extension.sql', 'utf8'));
+  // The contact pair: up, down (restoring the extension guard verbatim) and up again.
+  await sql(await readFile('db/2026-10-29-semog-contact.sql', 'utf8'));
+  await sql(await readFile('db/2026-10-29-semog-contact.down.sql', 'utf8'));
+  check(
+    (await sql("SELECT to_regclass('semog_bridge.contact_receipts')")).trim() === '',
+    'contact down removes the receipts table',
+  );
+  await sql(await readFile('db/2026-10-29-semog-contact.sql', 'utf8'));
 };
 
 const createTeam = async (database: PrismaClient) => {
@@ -310,9 +319,18 @@ const concurrentRoundScenario = async (database: PrismaClient, owner: Team, serv
 type Runtime = ReturnType<typeof createSemogSigningRuntime>;
 const enroll = async (runtime: Runtime, owner: Team, envelopeId: string, recipientId: number, expiraEm: string) =>
   await runtime.service.enroll(owner.actor, { envelopeId, recipientId, consentimento: 'Li e concordo.', expiraEm });
-const sign = async (runtime: Runtime, owner: Team, envelope: Envelope, index: number, expiraEm: string) => {
+type Enrollment = Awaited<ReturnType<typeof enroll>>;
+const sign = async (runtime: Runtime, owner: Team, envelope: Envelope, index: number, expiraEm: string) =>
+  await signWith(
+    runtime,
+    owner,
+    envelope,
+    index,
+    await enroll(runtime, owner, envelope.envelopeId, envelope.recipients[index].recipient.id, expiraEm),
+  );
+/** The Semog app's signing call: only what it kept from the enrollment answer (hashes), bound to the recipient id. */
+const signWith = async (runtime: Runtime, owner: Team, envelope: Envelope, index: number, snapshot: Enrollment) => {
   const { recipient, field } = envelope.recipients[index];
-  const snapshot = await enroll(runtime, owner, envelope.envelopeId, recipient.id, expiraEm);
   const chaveOperacao = randomUUID();
   const result = await runtime.service.reserve(owner.actor, {
     chaveOperacao,
@@ -446,6 +464,7 @@ const roundsScenario = async (database: PrismaClient, owner: Team, services: Ser
 };
 
 const EXTENSION_SQL = 'db/2026-10-29-semog-extension.sql';
+const CONTACT_SQL = 'db/2026-10-29-semog-contact.sql';
 const GUARD_EXPIRY = '2099-01-01T02:59:59.000Z';
 type GuardFixture = { envelopeId: string; teamId: number; userId: number; open: number; other: number; signed: number };
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -571,7 +590,9 @@ const mutantScenario = async (fixture: GuardFixture, oldKey: string) => {
     'CREATE FUNCTION',
     'CREATE OR REPLACE FUNCTION',
   );
-  const guard = extractBlock(up, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
+  // The guard in force is the latest migration's (contact), which still carries the extension branch.
+  const latest = await readFile(resolve(workspace, CONTACT_SQL), 'utf8');
+  const guard = extractBlock(latest, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
   const mutants: { name: string; guard?: string; allows?: string; killer: GuardCase }[] = [
     {
       name: 'other columns allowed with expiresAt',
@@ -586,8 +607,8 @@ const mutantScenario = async (fixture: GuardFixture, oldKey: string) => {
       name: 'NOT_SIGNED condition dropped',
       guard: mutate(
         guard,
-        "TG_OP='UPDATE' AND before->>'signingStatus'='NOT_SIGNED' AND after->>'signingStatus'='NOT_SIGNED'",
-        "TG_OP='UPDATE'",
+        "TG_OP='UPDATE' AND before->>'signingStatus'='NOT_SIGNED' AND after->>'signingStatus'='NOT_SIGNED'\n    AND (after-ARRAY['expiresAt'",
+        "TG_OP='UPDATE'\n    AND (after-ARRAY['expiresAt'",
       ),
       killer: 'SIGNED recipient in receipt',
     },
@@ -628,6 +649,318 @@ const mutantScenario = async (fixture: GuardFixture, oldKey: string) => {
     Object.entries(restored).every(([name, wasAllowed]) => wasAllowed === ALLOWED_CASES.includes(name as GuardCase)),
     'guard restored after the mutants',
   );
+};
+
+// ---- Contact change -------------------------------------------------------------------------------
+
+type ContactFixture = {
+  envelopeId: string;
+  teamId: number;
+  userId: number;
+  open: number;
+  other: number;
+  signed: number;
+};
+const CONTACT_EMAIL = 'novo.contato@example.invalid';
+const contactStatement = (
+  fixture: ContactFixture,
+  options: {
+    key?: string;
+    receipt?: { key: string; recipient: number; email: string };
+    recipient: number;
+    set: string;
+  },
+) => `BEGIN;
+${options.key === undefined ? '' : `SELECT set_config('semog_bridge.contact_key',${literal(options.key)},true);`}
+${
+  options.receipt
+    ? `INSERT INTO semog_bridge.contact_receipts ("chaveOperacao","envelopeId","teamId","userId","recipientId","emailAnterior",email,hash,resultado)
+  VALUES (${literal(options.receipt.key)}::uuid,${literal(fixture.envelopeId)},${fixture.teamId},${fixture.userId},
+  ${options.receipt.recipient},'antigo@example.invalid',${literal(options.receipt.email)},${literal('a'.repeat(64))},'{}'::jsonb);`
+    : ''
+}
+UPDATE public."Recipient" SET ${options.set} WHERE id=${options.recipient};
+ROLLBACK;`;
+
+const contactCases = async (fixture: ContactFixture, oldKey: string) => {
+  const key = randomUUID();
+  const own = (recipient: number) => ({ key, receipt: { key, recipient, email: CONTACT_EMAIL } });
+  const email = `email=${literal(CONTACT_EMAIL)}`;
+  return {
+    'exact e-mail, own receipt (allowed)': await allowed(
+      contactStatement(fixture, { ...own(fixture.open), recipient: fixture.open, set: email }),
+    ),
+    'e-mail + name': await allowed(
+      contactStatement(fixture, { ...own(fixture.open), recipient: fixture.open, set: `${email},name='Outro'` }),
+    ),
+    'e-mail + expiresAt': await allowed(
+      contactStatement(fixture, {
+        ...own(fixture.open),
+        recipient: fixture.open,
+        set: `${email},"expiresAt"='2099-01-01 00:00:00'`,
+      }),
+    ),
+    'SIGNED recipient with its own receipt': await allowed(
+      contactStatement(fixture, { ...own(fixture.signed), recipient: fixture.signed, set: email }),
+    ),
+    'e-mail other than the receipt': await allowed(
+      contactStatement(fixture, {
+        ...own(fixture.open),
+        recipient: fixture.open,
+        set: `email='outro@example.invalid'`,
+      }),
+    ),
+    'recipient not in receipt': await allowed(
+      contactStatement(fixture, { ...own(fixture.open), recipient: fixture.other, set: email }),
+    ),
+    'receipt from an earlier transaction': await allowed(
+      contactStatement(fixture, { key: oldKey, recipient: fixture.open, set: email }),
+    ),
+    'e-mail without capability': await allowed(contactStatement(fixture, { recipient: fixture.open, set: email })),
+  };
+};
+type ContactCase = keyof Awaited<ReturnType<typeof contactCases>>;
+
+const contactGuardScenario = async (database: PrismaClient, owner: Team) => {
+  const envelope = await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z'));
+  await database.$transaction((tx) => signNatively(tx, envelope.recipients[2]));
+  const [open, other, signed, armed] = [0, 1, 2, 4].map((index) => envelope.recipients[index].recipient.id);
+  const fixture = {
+    envelopeId: envelope.envelopeId,
+    teamId: owner.team.id,
+    userId: owner.user.id,
+    open,
+    other,
+    signed,
+  };
+  await sql(`INSERT INTO semog_bridge.snapshots (id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+    VALUES (gen_random_uuid(),${owner.team.id},${literal(envelope.envelopeId)},${armed},${literal('a'.repeat(64))},${literal('a'.repeat(64))},${literal('a'.repeat(64))},now()+interval '1 day','{}'::jsonb)`);
+  const oldKey = randomUUID();
+  await sql(`INSERT INTO semog_bridge.contact_receipts ("chaveOperacao","envelopeId","teamId","userId","recipientId","emailAnterior",email,hash,resultado)
+    VALUES (${literal(oldKey)}::uuid,${literal(envelope.envelopeId)},${owner.team.id},${owner.user.id},${open},'antigo@example.invalid',${literal(CONTACT_EMAIL)},${literal('a'.repeat(64))},'{}'::jsonb)`);
+  const expected = (name: string) => name === 'exact e-mail, own receipt (allowed)';
+  for (const [name, wasAllowed] of Object.entries(await contactCases(fixture, oldKey))) {
+    check(wasAllowed === expected(name), `contact guard: ${name}`);
+  }
+  const up = await readFile(resolve(workspace, CONTACT_SQL), 'utf8');
+  const guard = extractBlock(up, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
+  const allows = extractBlock(up, 'CREATE FUNCTION semog_bridge.contact_allows', '$$;').replace(
+    'CREATE FUNCTION',
+    'CREATE OR REPLACE FUNCTION',
+  );
+  const mutants: { name: string; guard?: string; allows?: string; killer: ContactCase }[] = [
+    {
+      name: 'other columns allowed with email',
+      guard: mutate(guard, "AND (after-'email')=(before-'email')", ''),
+      killer: 'e-mail + name',
+    },
+    {
+      name: 'NOT_SIGNED condition dropped (contact)',
+      guard: mutate(
+        guard,
+        "TG_OP='UPDATE' AND before->>'signingStatus'='NOT_SIGNED' AND after->>'signingStatus'='NOT_SIGNED'\n    AND (after-'email')",
+        "TG_OP='UPDATE'\n    AND (after-'email')",
+      ),
+      killer: 'SIGNED recipient with its own receipt',
+    },
+    {
+      name: 'contact_allows ignores the recipient',
+      allows: mutate(allows, ' AND r."recipientId"=p_recipient', ''),
+      killer: 'recipient not in receipt',
+    },
+    {
+      name: 'contact_allows ignores the e-mail',
+      allows: mutate(allows, 'r.email=p_email', 'true'),
+      killer: 'e-mail other than the receipt',
+    },
+    {
+      name: 'contact_allows accepts receipts of other transactions',
+      allows: mutate(allows, 'r.transacao=pg_current_xact_id_if_assigned()', 'true'),
+      killer: 'receipt from an earlier transaction',
+    },
+  ];
+  for (const mutant of mutants) {
+    await sql(`${mutant.guard ?? ''}\n${mutant.allows ?? ''}`);
+    const results = await contactCases(fixture, oldKey);
+    await sql(`${guard}\n${allows}`);
+    check(results[mutant.killer], `contact mutant killed: ${mutant.name} (by "${mutant.killer}")`);
+  }
+  const restored = await contactCases(fixture, oldKey);
+  check(
+    Object.entries(restored).every(([name, wasAllowed]) => wasAllowed === expected(name)),
+    'contact guard restored after the mutants',
+  );
+};
+
+const countSideEffects = async (database: PrismaClient, envelopeId: string) => {
+  const outbox = await database.$queryRaw<{ count: bigint }[]>(
+    Prisma.sql`SELECT count(*) FROM semog_bridge.outbox WHERE "envelopeId"=${envelopeId}`,
+  );
+  return { outbox: Number(outbox[0].count), jobs: await database.backgroundJob.count() };
+};
+const pdfText = async (bytes: Uint8Array) => {
+  const document = await getDocument({ data: new Uint8Array(bytes) }).promise;
+  const texts: string[] = [];
+  for (let number = 1; number <= document.numPages; number++) {
+    const content = await (await document.getPage(number)).getTextContent();
+    texts.push(content.items.map((item) => ('str' in item ? item.str : '')).join(''));
+  }
+  await document.destroy();
+  return texts.join('\n');
+};
+const sealWithHost = async (database: PrismaClient, services: Services, envelopeId: string) => {
+  const host = createSemogHost({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+    onError: (error) => console.error(error),
+  });
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if ((await database.envelope.findUniqueOrThrow({ where: { id: envelopeId } })).status === 'COMPLETED') {
+      return;
+    }
+    await host.tick();
+  }
+};
+
+/** 5 signers, 1 signs, 4 enrolled live; #2's e-mail changes; everyone signs with what the Semog app kept. */
+const contactScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const runtime = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+  });
+  const deadline = new Date(Date.now() + 86400000).toISOString();
+  const envelope = await createEnvelope(database, owner, new Date(deadline));
+  const ids = envelope.recipients.map((entry) => entry.recipient.id);
+  await sign(runtime, owner, envelope, 0, deadline);
+  const enrollments = new Map<number, Enrollment>();
+  for (const index of [1, 2, 3, 4]) {
+    enrollments.set(index, await enroll(runtime, owner, envelope.envelopeId, ids[index], deadline));
+  }
+  // Someone mid-signature (a reserved but unexecuted operation) blocks the change; nothing moves.
+  const pending = randomUUID();
+  await sql(`INSERT INTO semog_bridge.operations ("chaveOperacao","snapshotId","teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",acao,"hashPedido",pedido,evidencias)
+    SELECT ${literal(pending)}::uuid,id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",'assinar',${literal('a'.repeat(64))},'{}'::jsonb,'{}'::jsonb
+    FROM semog_bridge.snapshots WHERE "envelopeId"=${literal(envelope.envelopeId)} AND "recipientId"=${ids[2]} AND "revogadaEm" IS NULL`);
+  const blocked = await refusalDetail(() =>
+    runtime.contact.create(owner.actor, envelope.envelopeId, {
+      chaveOperacao: randomUUID(),
+      recipientId: ids[1],
+      email: CONTACT_EMAIL,
+    }),
+  );
+  check(
+    blocked === `operacao-em-andamento:${ids[2]}:operacao-existente`,
+    `operation in flight refuses the change (${blocked})`,
+  );
+  const untouched = await database.recipient.findUniqueOrThrow({ where: { id: ids[1] } });
+  const liveBefore = await sql(
+    `SELECT count(*) FROM semog_bridge.snapshots WHERE "envelopeId"=${literal(envelope.envelopeId)} AND "revogadaEm" IS NULL`,
+  );
+  check(
+    untouched.email === envelope.recipients[1].recipient.email && liveBefore.trim() === '5',
+    'refusal changed nothing',
+  );
+  await sql(`DELETE FROM semog_bridge.operations WHERE "chaveOperacao"=${literal(pending)}::uuid`);
+
+  const before = await countSideEffects(database, envelope.envelopeId);
+  const result = await runtime.contact.create(owner.actor, envelope.envelopeId, {
+    chaveOperacao: randomUUID(),
+    recipientId: ids[1],
+    email: '  Novo.Contato@Example.INVALID ',
+  });
+  check(
+    JSON.stringify(result.revogados) === JSON.stringify(ids.slice(1)) &&
+      JSON.stringify(result.reinscritos) === JSON.stringify(ids.slice(1)),
+    'contact change revoked and re-enrolled the 4 live missing enrollments',
+  );
+  const changed = await database.recipient.findUniqueOrThrow({ where: { id: ids[1] } });
+  check(changed.email === CONTACT_EMAIL, 'Recipient.email normalized and changed');
+  const after = await countSideEffects(database, envelope.envelopeId);
+  check(after.outbox === before.outbox && after.jobs === before.jobs, 'no outbox effect and no native job (no e-mail)');
+  const audit = await database.documentAuditLog.findFirst({
+    where: { envelopeId: envelope.envelopeId, type: 'RECIPIENT_UPDATED' },
+  });
+  check(
+    JSON.stringify(audit?.data).includes(`"to":"${CONTACT_EMAIL}"`),
+    'RECIPIENT_UPDATED audit with the e-mail change',
+  );
+  const keys = [];
+  for (const index of [2, 3, 4, 1]) {
+    const enrollment = enrollments.get(index);
+    if (!enrollment) {
+      throw new Error('missing enrollment');
+    }
+    keys.push(await signWith(runtime, owner, envelope, index, enrollment));
+  }
+  await sealWithHost(database, services, envelope.envelopeId);
+  const final = await database.envelope.findUniqueOrThrow({ where: { id: envelope.envelopeId } });
+  check(final.status === 'COMPLETED', 'native full seal completed after the contact change');
+  const finalPdf = await runtime.executor.pdf?.(owner.actor, keys[3]);
+  const text = finalPdf ? await pdfText(finalPdf) : '';
+  check(
+    text.includes(CONTACT_EMAIL) && !text.includes(envelope.recipients[1].recipient.email),
+    'certificate shows the new e-mail, not the old one',
+  );
+};
+
+/** Closed request: change the e-mail after the deadline, then extend and enroll again (the resend flow). */
+const closedContactScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const runtime = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+  });
+  const first = new Date(Date.now() + 10000).toISOString();
+  const envelope = await createEnvelope(database, owner, new Date(first));
+  const ids = envelope.recipients.map((entry) => entry.recipient.id);
+  for (const index of [0, 1, 2, 3]) {
+    await sign(runtime, owner, envelope, index, first);
+  }
+  await enroll(runtime, owner, envelope.envelopeId, ids[4], first);
+  await sleep(Math.max(0, Date.parse(first) - Date.now()) + 500);
+  const changed = await runtime.contact.create(owner.actor, envelope.envelopeId, {
+    chaveOperacao: randomUUID(),
+    recipientId: ids[4],
+    email: 'fechado@example.invalid',
+  });
+  check(
+    JSON.stringify(changed.revogados) === JSON.stringify([ids[4]]) && changed.reinscritos.length === 0,
+    'after the deadline the expired enrollment is revoked, not re-enrolled',
+  );
+  const second = new Date(Date.now() + 86400000).toISOString();
+  await runtime.extension.create(owner.actor, envelope.envelopeId, {
+    chaveOperacao: randomUUID(),
+    recipientIds: [ids[4]],
+    expiraEm: second,
+  });
+  await sign(runtime, owner, envelope, 4, second);
+  await sealWithHost(database, services, envelope.envelopeId);
+  const final = await database.envelope.findUniqueOrThrow({ where: { id: envelope.envelopeId } });
+  check(final.status === 'COMPLETED', 'contact change + extension + new enrollment complete the envelope');
+  const down = await readFile(resolve(workspace, 'db/2026-10-29-semog-contact.down.sql'), 'utf8');
+  check(await rejects(() => sql(down)), 'contact down refuses while receipts exist');
+};
+
+const refusalDetail = async (fn: () => Promise<unknown>) => {
+  try {
+    await fn();
+    return 'ok';
+  } catch (error) {
+    const refusal = readSemogRefusal(error);
+    return refusal
+      ? [refusal.codigo, ...(refusal.destinatarios ?? []).flatMap((entry) => [entry.recipientId, entry.motivo])].join(
+          ':',
+        )
+      : 'other';
+  }
 };
 
 const refusalCode = async (fn: () => Promise<unknown>) => {
@@ -703,6 +1036,9 @@ try {
   await concurrentRoundScenario(client, owner, services);
   await sharedKeyScenario(client, owner, services);
   await roundsScenario(client, owner, services);
+  await contactGuardScenario(client, owner);
+  await contactScenario(client, owner, services);
+  await closedContactScenario(client, owner, services);
 } finally {
   process.chdir(workspace);
   await client?.$disconnect();

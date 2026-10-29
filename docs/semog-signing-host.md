@@ -11,7 +11,8 @@ expiração, proprietário desabilitado e equipe antes de ler o JSON.
 Rotas: `envelopes-rascunho`, `envelopes-ativacao`, `inscricoes`,
 `manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao`,
 `manifestacoes/:chaveOperacao/pdf`, `envelopes/:envelopeId/selos-parciais` e
-`envelopes/:envelopeId/selos-parciais/:rodada/pdf` e `envelopes/:envelopeId/prorrogacoes`.
+`envelopes/:envelopeId/selos-parciais/:rodada/pdf`, `envelopes/:envelopeId/prorrogacoes`
+e `envelopes/:envelopeId/contatos`.
 Os contratos existentes não mudaram.
 
 Selo parcial (`POST …/selos-parciais`, corpo estrito `{ rodada, chaveOperacao }`):
@@ -52,6 +53,38 @@ transação que gravou o recibo daquela chave (comparando o `xid8` gravado no re
 com a transação corrente), para aquele destinatário e instante exato. O ensaio
 local fixa esse ramo caso a caso e mata um mutante para cada condição.
 
+Contato (`POST …/contatos`, corpo estrito `{ chaveOperacao, recipientId, email }`;
+o e-mail é aparado, posto em minúsculas e validado): corrige o e-mail de um
+signatário que não assinou num envelope já enviado, sem quebrar os links dos
+demais. Mesmo transporte, trava `Read Committed` + `FOR UPDATE` e propriedade da
+ponte. Numa transação: exige envelope `PENDING` sem `REJECTED`, alvo SIGNER e
+`NOT_SIGNED`, e-mail diferente do atual e não usado por outro destinatário do
+envelope, e nenhum faltante com operação na ponte (`operacao-em-andamento`, com os
+`recipientId`: alguém está no meio da assinatura; repetir depois). Grava o recibo
+`semog_bridge.contact_receipts`, revoga a inscrição ativa de todos os faltantes
+(cada snapshot carrega o e-mail de todos os destinatários), troca
+`Recipient.email` pelo ramo novo do gatilho de guarda, grava um `RECIPIENT_UPDATED`
+nativo com `changes: [{ type: 'EMAIL', from, to }]` e reinscreve, a partir do
+envelope atual, cada faltante cuja inscrição ainda não tinha vencido, com o mesmo
+consentimento e o mesmo `expiraEm`. Os hashes de documento e consentimento não
+mudam, então o semogapp assina com o que já tinha (links presos ao `recipientId`);
+inscrições vencidas ficam revogadas e voltam pela prorrogação + `/inscricoes` no
+reenvio. A troca é uma atualização direta da linha: nenhum handler nativo de
+destinatário roda, nenhum job nem efeito no outbox é criado, e o Documenso não
+envia e-mail ao novo endereço. Mesma chave e corpo devolvem o recibo; corpo
+divergente recebe 409 `chave-reutilizada`. Resposta:
+
+```json
+{
+  "chaveOperacao": "…",
+  "envelopeId": "…",
+  "recipientId": 21,
+  "email": "novo.endereco@example.org",
+  "revogados": [21, 22, 23],
+  "reinscritos": [21, 22]
+}
+```
+
 Recusas 409 das rotas de envelope (`selos-parciais` e `prorrogacoes`) trazem um
 código estável e, quando for por destinatário, quem e por quê; nada de detalhe
 interno:
@@ -67,11 +100,13 @@ interno:
 `codigo`: `chave-reutilizada` (mesma chave com outro corpo, ou chave já gravada por
 outra requisição, inclusive de outro envelope, em vez do antigo 503),
 `rodada-ja-selada` (selo parcial: rodada já selada com outra chave),
-`envelope-nao-pendente`, `envelope-com-recusa`, `prazo-no-passado` e
-`destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
+`envelope-nao-pendente`, `envelope-com-recusa`, `prazo-no-passado`,
+`operacao-em-andamento` (contato: faltante com operação; `destinatarios` com
+`motivo: operacao-existente`) e `destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
 inelegíveis de uma vez, em ordem de `recipientId`, com `motivo`: `nao-encontrado`,
 `nao-signatario` (CC e outros papéis), `ja-assinou`, `operacao-existente`,
-`sem-prazo` (`expiresAt` nulo), `prazo-nao-avanca` e `inscricao-vigente` (faltante
+`sem-prazo` (`expiresAt` nulo), `prazo-nao-avanca`, `email-inalterado`,
+`email-em-uso`, `reinscricao-impossivel` (contato) e `inscricao-vigente` (faltante
 fora do pedido com inscrição vigente; ele precisa entrar no pedido ou a inscrição
 vencer). Quem tem operação na ponte nunca é prorrogado: a unicidade
 `(envelopeId, recipientId)` de `operations` o impediria de assinar de novo. O
@@ -85,10 +120,11 @@ Para habilitar depois de revisão e aplicação autorizada das migrações:
   demais pares. Ele não concede membership e recusa substituir um papel alheio.
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
   `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
-  `2026-10-29-semog-partial-seal.sql` e `2026-10-29-semog-extension.sql`. Sem as
-  duas últimas, só as rotas novas respondem 503; cada inverso recusa enquanto existir
-  selo parcial ou recibo de prorrogação, e o da prorrogação restaura o gatilho de
-  guarda idêntico ao de `2026-10-06-semog-signing-execution.sql`. Como os
+  `2026-10-29-semog-partial-seal.sql`, `2026-10-29-semog-extension.sql` e
+  `2026-10-29-semog-contact.sql`. Sem as três últimas, só as rotas novas respondem
+  503; cada inverso recusa enquanto existir selo parcial ou recibo, o da prorrogação
+  restaura o gatilho de guarda idêntico ao de `2026-10-06-semog-signing-execution.sql`
+  e o do contato, idêntico ao da prorrogação. Como os
   pares irmãos, aplicar com o papel dono das tabelas do Documenso — o mesmo da
   conexão Prisma injetada no host —, para que a tabela pertença a ele (RLS ligada
   sem `FORCE`, nenhum grant a `PUBLIC` ou a `semog_bridge_service`).

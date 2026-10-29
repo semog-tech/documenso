@@ -62,6 +62,13 @@ describe('mounted Semog host', () => {
       }),
     );
     expect(extension.status).toBe(404);
+    const contact = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/contatos/extra', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(contact.status).toBe(404);
     expect(query).not.toHaveBeenCalled();
   });
   it('polls seal-only queue autonomously without acknowledging suppressed email/webhooks', async () => {

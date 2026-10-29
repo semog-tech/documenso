@@ -12,6 +12,7 @@ export const ZSemogRefusal = z
       'envelope-com-recusa',
       'prazo-no-passado',
       'destinatarios-inelegiveis',
+      'operacao-em-andamento',
     ]),
     destinatarios: z
       .array(
@@ -26,6 +27,9 @@ export const ZSemogRefusal = z
               'sem-prazo',
               'prazo-nao-avanca',
               'inscricao-vigente',
+              'email-inalterado',
+              'email-em-uso',
+              'reinscricao-impossivel',
             ]),
           })
           .strict(),
