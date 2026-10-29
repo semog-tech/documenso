@@ -11,8 +11,8 @@ expiração, proprietário desabilitado e equipe antes de ler o JSON.
 Rotas: `envelopes-rascunho`, `envelopes-ativacao`, `inscricoes`,
 `manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao`,
 `manifestacoes/:chaveOperacao/pdf`, `envelopes/:envelopeId/selos-parciais` e
-`envelopes/:envelopeId/selos-parciais/:rodada/pdf`, `envelopes/:envelopeId/prorrogacoes`
-e `envelopes/:envelopeId/contatos`.
+`envelopes/:envelopeId/selos-parciais/:rodada/pdf`, `envelopes/:envelopeId/prorrogacoes`,
+`envelopes/:envelopeId/contatos` e `envelopes/:envelopeId/cancelamento`.
 Os contratos existentes não mudaram.
 
 Selo parcial (`POST …/selos-parciais`, corpo estrito `{ rodada, chaveOperacao }`):
@@ -85,6 +85,37 @@ divergente recebe 409 `chave-reutilizada`. Resposta:
 }
 ```
 
+Cancelamento (`POST …/cancelamento`, corpo estrito `{ chaveOperacao, motivo }`; o
+motivo é aparado e tem de 1 a 500 caracteres): cancela um envelope `PENDING` ativado
+pela ponte e encerra todas as inscrições ativas. O cancelamento nativo
+(`POST /api/v2/envelope/cancel`) continua recusado pelo gatilho de guarda enquanto houver
+inscrição ativa, porque não grava recibo (issue semogapp#657). Mesmo transporte, trava
+`Read Committed` + `FOR UPDATE` e propriedade da ponte. Numa transação: replay pela chave;
+exige envelope `PENDING` (`envelope-nao-pendente`, inclusive já cancelado por outra chave) e
+nenhuma manifestação reservada que ainda possa executar (`operations.estado='pendente'`
+com a própria inscrição não revogada e não vencida, a mesma condição do executor:
+`operacao-em-andamento`, sem `destinatarios`; reserva cuja inscrição venceu nunca executa
+e não bloqueia); grava o recibo
+`semog_bridge.cancel_receipts` e a capacidade `semog_bridge.cancel_key`; muda
+`status=CANCELLED` e `completedAt` pelo ramo novo do gatilho de guarda (só essas colunas e
+`updatedAt`, recibo da própria transação para este envelope), com as inscrições ainda
+ativas; grava `DOCUMENT_CANCELLED` nativo com `{ reason: motivo }` e o ator; revoga todas as
+inscrições ativas do envelope (`revogadaEm`) e guarda o resultado no recibo. A ordem é
+deliberada: o status passa pelo ramo que confere o recibo, e não pela guarda já desarmada.
+Nenhum handler nativo de cancelamento roda: nenhum job de e-mail, webhook ou efeito no
+outbox. Mesma chave e motivo devolvem o recibo, também depois do cancelamento; motivo,
+envelope ou equipe divergente recebe 409 `chave-reutilizada`. Resposta:
+
+```json
+{
+  "chaveOperacao": "…",
+  "envelopeId": "…",
+  "situacao": "cancelado",
+  "canceladoEm": "2026-10-30T12:00:00.000Z",
+  "revogados": 4
+}
+```
+
 Recusas 409 das rotas de envelope (`selos-parciais` e `prorrogacoes`) trazem um
 código estável e, quando for por destinatário, quem e por quê; nada de detalhe
 interno:
@@ -102,7 +133,7 @@ outra requisição, inclusive de outro envelope, em vez do antigo 503),
 `rodada-ja-selada` (selo parcial: rodada já selada com outra chave),
 `envelope-nao-pendente`, `envelope-com-recusa`, `prazo-no-passado`,
 `operacao-em-andamento` (contato: faltante com operação; `destinatarios` com
-`motivo: operacao-existente`) e `destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
+`motivo: operacao-existente`; cancelamento: manifestação em curso, sem `destinatarios`) e `destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
 inelegíveis de uma vez, em ordem de `recipientId`, com `motivo`: `nao-encontrado`,
 `nao-signatario` (CC e outros papéis), `ja-assinou`, `operacao-existente`,
 `sem-prazo` (`expiresAt` nulo), `prazo-nao-avanca`, `email-inalterado`,
@@ -120,11 +151,12 @@ Para habilitar depois de revisão e aplicação autorizada das migrações:
   demais pares. Ele não concede membership e recusa substituir um papel alheio.
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
   `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
-  `2026-10-29-semog-partial-seal.sql`, `2026-10-29-semog-extension.sql` e
-  `2026-10-29-semog-contact.sql`. Sem as três últimas, só as rotas novas respondem
-  503; cada inverso recusa enquanto existir selo parcial ou recibo, o da prorrogação
-  restaura o gatilho de guarda idêntico ao de `2026-10-06-semog-signing-execution.sql`
-  e o do contato, idêntico ao da prorrogação. Como os
+  `2026-10-29-semog-partial-seal.sql`, `2026-10-29-semog-extension.sql`,
+  `2026-10-29-semog-contact.sql` e `2026-10-30-semog-cancel.sql`. Sem as quatro
+  últimas, só as rotas novas respondem 503; cada inverso recusa enquanto existir selo
+  parcial ou recibo, o da prorrogação restaura o gatilho de guarda idêntico ao de
+  `2026-10-06-semog-signing-execution.sql`, o do contato, idêntico ao da prorrogação, e o
+  do cancelamento, idêntico ao do contato. Como os
   pares irmãos, aplicar com o papel dono das tabelas do Documenso — o mesmo da
   conexão Prisma injetada no host —, para que a tabela pertença a ele (RLS ligada
   sem `FORCE`, nenhum grant a `PUBLIC` ou a `semog_bridge_service`).
@@ -167,8 +199,9 @@ SEMOG_PG_BIN=/opt/homebrew/bin node24 node_modules/vite-node/vite-node.mjs --con
 ```
 
 O último usa binários locais do PostgreSQL (sem Docker), cria e remove um diretório
-descartável e cobre selo parcial, concorrência, prorrogação e a selagem final depois
-da segunda rodada.
+descartável e cobre selo parcial, concorrência, prorrogação, a selagem final depois
+da segunda rodada, troca de contato e cancelamento (ramos do gatilho caso a caso, com
+mutantes, e o cancelamento de ponta a ponta contra o banco).
 
 `node24` representa o executável Node 24 efetivamente disponível. O primeiro
 script sobe HTTP em loopback com a mesma função de registro do roteador. O segundo

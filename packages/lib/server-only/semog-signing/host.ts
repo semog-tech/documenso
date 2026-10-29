@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { mapSecondaryIdToDocumentId } from '../../utils/envelope';
 import { createSemogActivationRuntime } from './activation-runtime';
+import { SEMOG_CANCEL_PREFIX } from './cancel-http';
 import { SEMOG_CONTACT_PREFIX } from './contact-http';
 import { createSemogDraftRuntime } from './draft-runtime';
 import { SEMOG_EXTENSION_PREFIX } from './extension-http';
@@ -118,7 +119,9 @@ export const createSemogHost = (dependencies: Dependencies) => {
               ? runtime.extensionHandler(request)
               : SEMOG_CONTACT_PREFIX.test(path)
                 ? runtime.contactHandler(request)
-                : runtime.handler(request);
+                : SEMOG_CANCEL_PREFIX.test(path)
+                  ? runtime.cancelHandler(request)
+                  : runtime.handler(request);
     },
     tick: runtime.outbox.tick,
     start: () => {

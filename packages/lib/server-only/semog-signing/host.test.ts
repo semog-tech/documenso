@@ -69,6 +69,22 @@ describe('mounted Semog host', () => {
       }),
     );
     expect(contact.status).toBe(404);
+    const cancelExtra = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/cancelamento/extra', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(cancelExtra.status).toBe(404);
+    // Dispatched to the cancel handler: the bearer is checked before the body, so this is 401, not 404.
+    const cancel = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/cancelamento', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid', 'Content-Type': 'application/json' },
+        body: '{invalid',
+      }),
+    );
+    expect(cancel.status).toBe(401);
     expect(query).not.toHaveBeenCalled();
   });
   it('polls seal-only queue autonomously without acknowledging suppressed email/webhooks', async () => {
