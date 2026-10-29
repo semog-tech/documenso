@@ -90,7 +90,12 @@ const field = (person: FixtureRecipient, index: number, type: 'SIGNATURE' | 'TEX
       : null,
 });
 
-export const buildSemogPartialEnvelope = (initialData: string) => ({
+/** A CC recipient receives a copy only: it has no fields and never counts toward N. */
+const ccRecipient = () => ({
+  ...buildRecipient({ id: 6, name: 'Fabio Copia', email: 'fabio@example.org', signed: false }),
+  role: 'CC' as 'SIGNER' | 'CC',
+});
+export const buildSemogPartialEnvelope = (initialData: string, options: { withCc?: boolean } = {}) => ({
   id: 'env_partial',
   secondaryId: 'document_77',
   externalId: null,
@@ -124,7 +129,10 @@ export const buildSemogPartialEnvelope = (initialData: string) => ({
     signingOrder: 'PARALLEL' as const,
   },
   user: { name: 'Semog Administração', email: 'admin@example.org' },
-  recipients: people.map(buildRecipient),
+  recipients: [
+    ...people.map((person) => ({ ...buildRecipient(person), role: 'SIGNER' as 'SIGNER' | 'CC' })),
+    ...(options.withCc ? [ccRecipient()] : []),
+  ],
   fields: people.flatMap((person, index) => [field(person, index, 'SIGNATURE'), field(person, index, 'TEXT')]),
   envelopeItems: [
     {
@@ -169,7 +177,20 @@ const forbiddenMutation = (name: string) =>
   });
 
 /** In-memory Prisma transaction: only the reads and inserts the partial seal is allowed to perform. */
-export const createSemogPartialSealStore = (envelope: FixtureEnvelope) => {
+export const createSemogPartialSealStore = (envelope: FixtureEnvelope, options: { nativeSeal?: boolean } = {}) => {
+  const native = {
+    statements: [] as string[],
+    envelopeUpdates: [] as unknown[],
+    itemUpdates: [] as unknown[],
+    audits: [] as unknown[],
+  };
+  const allowed = (name: string, sink: unknown[]) =>
+    options.nativeSeal
+      ? vi.fn((input: unknown) => {
+          sink.push(input);
+          return Promise.resolve(input);
+        })
+      : forbiddenMutation(name);
   const state = {
     managed: true,
     partialSeals: [] as PartialSealRow[],
@@ -192,6 +213,9 @@ export const createSemogPartialSealStore = (envelope: FixtureEnvelope) => {
           : row.envelopeId === values[0] && row.rodada === values[1] && row.teamId === values[2],
       );
     }
+    if (options.nativeSeal && text.includes('semog_bridge.ready_to_seal')) {
+      return [{ ready: true }];
+    }
     if (text.includes('semog_bridge.operations')) {
       return [];
     }
@@ -203,6 +227,10 @@ export const createSemogPartialSealStore = (envelope: FixtureEnvelope) => {
   const insert = (query: Prisma.Sql) => {
     const text = sqlText(query);
     state.executed.push(text);
+    if (options.nativeSeal && (text.includes('semog_bridge.operations') || text.includes('semog_bridge.outbox'))) {
+      native.statements.push(text);
+      return 1;
+    }
     if (!text.includes('INSERT INTO semog_bridge.partial_seals')) {
       throw new Error(`unexpected statement: ${text}`);
     }
@@ -233,14 +261,14 @@ export const createSemogPartialSealStore = (envelope: FixtureEnvelope) => {
     $executeRaw: executeRaw,
     envelope: {
       findUniqueOrThrow: vi.fn(async () => envelope),
-      update: forbiddenMutation('envelope.update'),
+      update: allowed('envelope.update', native.envelopeUpdates),
       updateMany: forbiddenMutation('envelope.updateMany'),
     },
-    envelopeItem: { update: forbiddenMutation('envelopeItem.update') },
+    envelopeItem: { update: allowed('envelopeItem.update', native.itemUpdates) },
     recipient: { update: forbiddenMutation('recipient.update'), updateMany: forbiddenMutation('recipient.updateMany') },
     field: { update: forbiddenMutation('field.update') },
     documentAuditLog: {
-      create: forbiddenMutation('documentAuditLog.create'),
+      create: allowed('documentAuditLog.create', native.audits),
       findMany: vi.fn(async () => people.filter((person) => person.signed).map(completedLog)),
     },
     organisationClaim: { findFirst: vi.fn(async () => ({ flags: {} })) },
@@ -260,20 +288,21 @@ export const createSemogPartialSealStore = (envelope: FixtureEnvelope) => {
       return await fn(tx as unknown as Prisma.TransactionClient);
     },
   };
-  return { state, tx, client, transactions };
+  return { state, tx, client, transactions, native };
 };
 
-export const createSemogPartialSealFixture = async (options: { enabled?: boolean } = {}) => {
+export const SEMOG_STAMP_FONT_PATH = resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix/public/fonts/noto-sans.ttf');
+export const createSemogTestSigner = async () =>
+  await P12Signer.create(readFileSync(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix/example/cert.p12')), '', {
+    buildChain: false,
+  });
+export const createSemogPartialSealFixture = async (
+  options: { enabled?: boolean; withCc?: boolean; nativeSeal?: boolean; now?: Date } = {},
+) => {
   const original = await buildSemogTestPdf();
-  const envelope = buildSemogPartialEnvelope(Buffer.from(original).toString('base64'));
-  const store = createSemogPartialSealStore(envelope);
-  const signer = await P12Signer.create(
-    readFileSync(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix/example/cert.p12')),
-    '',
-    {
-      buildChain: false,
-    },
-  );
+  const envelope = buildSemogPartialEnvelope(Buffer.from(original).toString('base64'), options);
+  const store = createSemogPartialSealStore(envelope, options);
+  const signer = await createSemogTestSigner();
   const getDocumentI18n = vi.fn(async (language: string) =>
     setupI18n({ locale: language, messages: { [language]: {} } }),
   );
@@ -283,10 +312,19 @@ export const createSemogPartialSealFixture = async (options: { enabled?: boolean
     client: store.client,
     readPdf: createSemogPdfReader(),
     signer,
-    stampFont: readFileSync(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix/public/fonts/noto-sans.ttf')),
+    stampFont: readFileSync(SEMOG_STAMP_FONT_PATH),
     getDocumentI18n,
     authenticate,
-    now: () => SEMOG_PARTIAL_SEAL_NOW,
+    now: () => options.now ?? SEMOG_PARTIAL_SEAL_NOW,
   });
-  return { original, envelope, store, service, getDocumentI18n, authenticate, actor: { teamId: 1, userId: 9 } };
+  return {
+    original,
+    envelope,
+    store,
+    service,
+    signer,
+    getDocumentI18n,
+    authenticate,
+    actor: { teamId: 1, userId: 9 },
+  };
 };

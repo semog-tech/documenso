@@ -1,5 +1,7 @@
 -- Selo parcial: PDF selado de um envelope PENDING, sem concluir, recusar ou re-apontar o envelope.
 -- Aplicar depois dos pares da ponte (inclusive 2026-10-07-semog-host). Sem modelo Prisma novo.
+-- Papel: o dono das tabelas do Documenso, o mesmo da conexão Prisma privilegiada injetada no host
+-- (como nos pares irmãos). A tabela pertence a ele; RLS ligada sem FORCE e sem grant a outros papéis.
 BEGIN;
 CREATE TABLE semog_bridge.partial_seals (
   "chaveOperacao" uuid PRIMARY KEY,

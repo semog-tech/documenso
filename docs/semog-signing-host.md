@@ -24,8 +24,12 @@ certificado, quem não assinou aparece sem caixa nem ID de assinatura e com
 `completedAt`, destinatários, item do envelope, auditoria nem outbox. Mesma chave e
 mesma rodada devolvem o mesmo recibo sem renderizar; chave ou rodada divergente
 recebe 409, e todos assinados também (o PDF final pertence à selagem nativa).
-Duas chamadas simultâneas da mesma rodada se resolvem por `Serializable` + `FOR
-UPDATE`: a perdedora recebe 40001 e repete como replay. O `GET …/pdf` confere a
+A transação usa `Read Committed` + `FOR UPDATE` no envelope, não `Serializable`: o
+snapshot serializável começa antes da espera pela trava e perderia uma assinatura
+confirmada durante essa espera. Toda mutação nativa ou da ponte trava a mesma
+linha (executor e gatilho de guarda), então depois da trava cada leitura vê o
+estado atual e estável; uma segunda chamada simultânea da mesma rodada espera e
+lê o recibo gravado como replay. O `GET …/pdf` confere a
 equipe e o SHA-256 gravado antes de devolver os bytes.
 
 Para habilitar depois de revisão e aplicação autorizada das migrações:
@@ -35,7 +39,10 @@ Para habilitar depois de revisão e aplicação autorizada das migrações:
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
   `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
   `2026-10-29-semog-partial-seal.sql`. Sem esta última, só as rotas de selo
-  parcial respondem 503; o inverso recusa enquanto existir selo parcial.
+  parcial respondem 503; o inverso recusa enquanto existir selo parcial. Como os
+  pares irmãos, aplicar com o papel dono das tabelas do Documenso — o mesmo da
+  conexão Prisma injetada no host —, para que a tabela pertença a ele (RLS ligada
+  sem `FORCE`, nenhum grant a `PUBLIC` ou a `semog_bridge_service`).
 - Configurar certificado local explicitamente em
   `NEXT_PRIVATE_SIGNING_LOCAL_FILE_PATH` ou `NEXT_PRIVATE_SIGNING_LOCAL_FILE_CONTENTS`,
   senha correspondente e transporte `local`. Não há fallback para certificado de exemplo.

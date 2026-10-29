@@ -115,6 +115,8 @@ type DecorateOptions = {
   documentPages: Uint8Array[];
   /** Runs after the appendix and fields, so it reaches every page of the sealed PDF. */
   stampAllPages?: (pdf: PDF) => void;
+  /** Signature /Reason; the native seal keeps the stock value. */
+  reason?: string;
 };
 export const decorateSemogPdf = async (bytes: Uint8Array, options: DecorateOptions) => {
   const pdf = await PDF.load(bytes);
@@ -135,7 +137,11 @@ export const decorateSemogPdf = async (bytes: Uint8Array, options: DecorateOptio
   pdf.flattenAll();
   const normalized = await PDF.load(await pdf.save({ useXRefStream: true }));
   return (
-    await normalized.sign({ signer: options.signer, reason: 'Signed by Documenso', subFilter: 'ETSI.CAdES.detached' })
+    await normalized.sign({
+      signer: options.signer,
+      reason: options.reason ?? 'Signed by Documenso',
+      subFilter: 'ETSI.CAdES.detached',
+    })
   ).bytes;
 };
 

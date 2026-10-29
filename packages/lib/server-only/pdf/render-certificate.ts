@@ -105,6 +105,8 @@ type RenderLabelAndTextOptions = {
   y?: number;
   labelFill?: string;
   valueFill?: string;
+  /** Semog fork: prose values wrap by word; the native default keeps 'char' for emails and IDs. */
+  wrap?: 'char' | 'word';
 };
 
 const renderLabelAndText = (options: RenderLabelAndTextOptions) => {
@@ -136,7 +138,7 @@ const renderLabelAndText = (options: RenderLabelAndTextOptions) => {
     fontFamily: 'Inter',
     text: options.text,
     fill: valueFill,
-    wrap: 'char',
+    wrap: options.wrap ?? 'char',
     fontSize: textSm,
   });
 
@@ -423,6 +425,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
     value: string;
     labelFill?: string;
     valueFill?: string;
+    wrap?: 'char' | 'word';
   };
 
   const itemsToRender: DetailItem[] = [
@@ -463,6 +466,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
       value: recipient.notSigned.value,
       labelFill: textRejectedRed,
       valueFill: textRejectedRed,
+      wrap: 'word',
     });
   } else {
     itemsToRender.push({
@@ -486,6 +490,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
         : isOwner
           ? i18n._(msg`I am the owner of this document`)
           : i18n._(RECIPIENT_ROLE_SIGNING_REASONS[recipient.role]),
+    wrap: recipient.notSigned ? 'word' : undefined,
   });
 
   for (const [index, item] of itemsToRender.entries()) {
@@ -496,6 +501,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
       y: column.getClientRect().height + (index === 0 ? 0 : 8),
       labelFill: item.labelFill,
       valueFill: item.valueFill,
+      wrap: item.wrap,
     });
     column.add(labelAndText);
   }

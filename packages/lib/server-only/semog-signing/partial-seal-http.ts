@@ -10,6 +10,13 @@ export const SEMOG_PARTIAL_SEAL_PREFIX = /^\/api\/semog\/v1\/envelopes\/[^/]+\/s
 const createPath = /^\/api\/semog\/v1\/envelopes\/([^/]+)\/selos-parciais$/;
 const pdfPath = /^\/api\/semog\/v1\/envelopes\/([^/]+)\/selos-parciais\/([1-9]\d{0,3})\/pdf$/;
 const MAX_BODY_BYTES = 4096;
+const decodeEnvelopeId = (segment: string) => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw semogError(AppErrorCode.INVALID_REQUEST, 400);
+  }
+};
 
 const errorResponse = (error: unknown) => {
   const status =
@@ -52,13 +59,13 @@ export const createSemogPartialSealHandler =
       const actor = await service.authenticate(bearer[1]);
       if (read) {
         const rodada = Number(read[2]);
-        return pdfResponse(await service.pdf(actor, decodeURIComponent(read[1]), rodada), rodada);
+        return pdfResponse(await service.pdf(actor, decodeEnvelopeId(read[1]), rodada), rodada);
       }
       if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
         throw semogError(AppErrorCode.INVALID_BODY, 400);
       }
       const body = await readSemogBoundedJsonBody(request, MAX_BODY_BYTES);
-      return semogDraftJsonResponse(await service.create(actor, decodeURIComponent(created?.[1] ?? ''), body), 200);
+      return semogDraftJsonResponse(await service.create(actor, decodeEnvelopeId(created?.[1] ?? ''), body), 200);
     } catch (error) {
       return errorResponse(error);
     }

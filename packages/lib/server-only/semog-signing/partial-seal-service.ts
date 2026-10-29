@@ -101,6 +101,7 @@ const renderPartialPdf = async (
     rejectionFont: null,
     documentPages,
     stampAllPages: (document) => stampSemogPartialSeal(document, dependencies.stampFont, label),
+    reason: `Selo parcial ${count.assinados} de ${count.total}`,
   });
 };
 
@@ -175,12 +176,17 @@ export const createSemogPartialSealService = (dependencies: Dependencies) => {
       for (let attempt = 0; ; attempt++) {
         try {
           return await dependencies.client.$transaction((tx) => sealPartialLocked(tx, setup, actor, id, input), {
-            isolationLevel: 'Serializable',
+            // Read Committed on purpose: a Serializable snapshot starts at the first statement, before the
+            // envelope lock wait, and would miss a signature committed while this seal was queued behind it.
+            // Every bridge and native mutation of the envelope takes the same row lock (the executor and the
+            // guard trigger), so after the lock each statement sees a stable, current envelope. A concurrent
+            // first call for the same round waits on the lock and then reads the committed row as a replay.
+            isolationLevel: 'ReadCommitted',
             timeout: 60000,
             maxWait: 10000,
           });
         } catch (error) {
-          // A concurrent first call for the same round loses with 40001 and replays on the next attempt.
+          // Deadlocks (40P01) are retried; the losing attempt wrote nothing.
           if (attempt === 2 || !isSemogRetryableTransactionError(error)) {
             throw error;
           }

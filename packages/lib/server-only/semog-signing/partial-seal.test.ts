@@ -38,6 +38,13 @@ describe('Semog partial seal label', () => {
     expect(semogPartialSealLabel(0, 3, new Date('2026-01-05T12:00:00.000Z'))).toBe(
       'SELO PARCIAL · 0 de 3 · 05/01/2026',
     );
+    // 03:30Z is 00:30 of the 30th in Recife (UTC-3) but still the 29th in Manaus (UTC-4).
+    expect(semogPartialSealLabel(1, 4, new Date('2026-10-30T03:30:00.000Z'))).toBe(
+      'SELO PARCIAL · 1 de 4 · 30/10/2026',
+    );
+    expect(semogPartialSealLabel(1, 4, new Date('2026-10-30T02:59:59.000Z'))).toBe(
+      'SELO PARCIAL · 1 de 4 · 29/10/2026',
+    );
   });
 });
 
@@ -144,6 +151,9 @@ describe('Semog partial seal of a PENDING envelope (2 of 5)', () => {
     const contents = Buffer.from(sealed).toString('latin1');
     expect(contents).toContain('/ETSI.CAdES.detached');
     expect(contents).toContain('/ByteRange');
+    // The signature dictionary names the round, so a validator can tell it from the final seal.
+    expect(contents).toContain('/Reason (Selo parcial 2 de 5)');
+    expect(contents).not.toContain('Signed by Documenso');
   });
 
   it('keeps the envelope PENDING and the native document untouched', () => {
@@ -158,7 +168,7 @@ describe('Semog partial seal of a PENDING envelope (2 of 5)', () => {
     // The only write besides the new DocumentData: no outbox, no DOCUMENT_COMPLETED.
     expect(fixture.store.state.executed).toHaveLength(1);
     expect(fixture.store.state.executed[0]).toContain('INSERT INTO semog_bridge.partial_seals');
-    expect(fixture.store.transactions[0]).toMatchObject({ isolationLevel: 'Serializable' });
+    expect(fixture.store.transactions[0]).toMatchObject({ isolationLevel: 'ReadCommitted' });
   });
 
   it('replays the same round without rendering again', async () => {
@@ -179,6 +189,20 @@ describe('Semog partial seal of a PENDING envelope (2 of 5)', () => {
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
+});
+
+describe('Semog partial seal with a CC recipient', () => {
+  it('counts only signers toward N and leaves the CC out of the receipt', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix'));
+    const fixture = await createSemogPartialSealFixture({ withCc: true });
+    const result = await fixture.service.create(fixture.actor, 'env_partial', body);
+    expect(result.total).toBe(5);
+    expect(result.assinados).toBe(2);
+    expect(result.assinantes.map((signer) => signer.recipientId)).toEqual([1, 2, 3, 4, 5]);
+    const texts = await pageTexts(await fixture.service.pdf(fixture.actor, 'env_partial', 1));
+    expect(texts.join('\n')).toContain(stamp);
+    vi.restoreAllMocks();
+  }, 60000);
 });
 
 describe('Semog partial seal refusals', () => {
@@ -298,6 +322,25 @@ describe('Semog partial seal HTTP boundary', () => {
       expect(refused.status).toBe(404);
     }
     expect((await handler(new Request(base, { headers: { authorization: 'Bearer x' } }))).status).toBe(404);
+  });
+  it('answers 400, not 503, for a malformed percent-encoding in the envelope ID', async () => {
+    const fake = service();
+    const handler = createSemogPartialSealHandler(fake);
+    const malformed = 'https://local.invalid/api/semog/v1/envelopes/env%E0%A4%A/selos-parciais';
+    const created = await handler(
+      new Request(malformed, {
+        method: 'POST',
+        headers: { authorization: 'Bearer api_0123456789abcdef', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+    expect(created.status).toBe(400);
+    const read = await handler(
+      new Request(`${malformed}/1/pdf`, { headers: { authorization: 'Bearer api_0123456789abcdef' } }),
+    );
+    expect(read.status).toBe(400);
+    expect(fake.create).not.toHaveBeenCalled();
+    expect(fake.pdf).not.toHaveBeenCalled();
   });
   it('reads the stored PDF only for the owning team and verifies its hash', async () => {
     vi.spyOn(process, 'cwd').mockReturnValue(resolve(SEMOG_REPOSITORY_ROOT, 'apps/remix'));
