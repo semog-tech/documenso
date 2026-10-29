@@ -248,6 +248,10 @@ const finishExecution = async (
   );
   return result;
 };
+/** Serializable conflicts and deadlocks are safe to retry: the losing transaction wrote nothing. */
+export const isSemogRetryableTransactionError = (error: unknown) =>
+  error instanceof Prisma.PrismaClientKnownRequestError &&
+  (error.code === 'P2034' || (error.code === 'P2010' && ['40001', '40P01'].includes(String(error.meta?.code))));
 const executeWithRetry = async (dependencies: Dependencies, actor: SemogActor, key: string) => {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -257,10 +261,7 @@ const executeWithRetry = async (dependencies: Dependencies, actor: SemogActor, k
         maxWait: 10000,
       });
     } catch (error) {
-      const retryable =
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        (error.code === 'P2034' || (error.code === 'P2010' && ['40001', '40P01'].includes(String(error.meta?.code))));
-      if (attempt === 2 || !retryable) {
+      if (attempt === 2 || !isSemogRetryableTransactionError(error)) {
         throw error;
       }
     }

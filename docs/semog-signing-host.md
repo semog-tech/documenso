@@ -9,15 +9,125 @@ host devolve 404 e não lê o corpo. As factories verificam token API nativo,
 expiração, proprietário desabilitado e equipe antes de ler o JSON.
 
 Rotas: `envelopes-rascunho`, `envelopes-ativacao`, `inscricoes`,
-`manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao` e
-`manifestacoes/:chaveOperacao/pdf`. Os contratos existentes não mudaram.
+`manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao`,
+`manifestacoes/:chaveOperacao/pdf`, `envelopes/:envelopeId/selos-parciais` e
+`envelopes/:envelopeId/selos-parciais/:rodada/pdf`, `envelopes/:envelopeId/prorrogacoes`
+e `envelopes/:envelopeId/contatos`.
+Os contratos existentes não mudaram.
+
+Selo parcial (`POST …/selos-parciais`, corpo estrito `{ rodada, chaveOperacao }`):
+sela o que já foi assinado num envelope `PENDING` ativado pela ponte (v2, SES, um
+item, sem `REJECTED`, ao menos um faltante), com o mesmo renderizador, certificado
+e CMS detached da selagem final, e o carimbo "SELO PARCIAL · n de N · dd/mm/aaaa"
+(dia em America/Recife) em todas as páginas, certificado e auditoria inclusive. No
+certificado, quem não assinou aparece sem caixa nem ID de assinatura e com
+"Não assinou — selo parcial n de N" no lugar do motivo nativo. Grava um
+`DocumentData` novo e uma linha em `semog_bridge.partial_seals`; não altera status,
+`completedAt`, destinatários, item do envelope, auditoria nem outbox. Mesma chave e
+mesma rodada devolvem o mesmo recibo sem renderizar; chave ou rodada divergente
+recebe 409, e todos assinados também (o PDF final pertence à selagem nativa).
+A transação usa `Read Committed` + `FOR UPDATE` no envelope, não `Serializable`: o
+snapshot serializável começa antes da espera pela trava e perderia uma assinatura
+confirmada durante essa espera. Toda mutação nativa ou da ponte trava a mesma
+linha (executor e gatilho de guarda), então depois da trava cada leitura vê o
+estado atual e estável; uma segunda chamada simultânea da mesma rodada espera e
+lê o recibo gravado como replay. O `GET …/pdf` confere a
+equipe e o SHA-256 gravado antes de devolver os bytes.
+
+Prorrogação (`POST …/prorrogacoes`, corpo estrito `{ chaveOperacao, recipientIds[],
+expiraEm }`): reabre uma rodada para quem não assinou. Mesma trava `Read Committed`
++ `FOR UPDATE`, equipe e envelope ativado pela ponte; exige envelope `PENDING` sem
+`REJECTED`, cada destinatário SIGNER, `NOT_SIGNED`, sem operação na ponte, com
+`expiresAt` atual e `expiraEm` futuro e maior que ele. Revoga a inscrição ativa
+(`revogadaEm`, vencida ou não), grava `Recipient.expiresAt` e um `RECIPIENT_UPDATED`
+nativo por destinatário (o vocabulário nativo não tem diff de prazo; o instante fica
+no recibo `semog_bridge.extension_receipts`). Mesma chave e corpo devolvem o recibo;
+corpo divergente recebe 409. Depois disso `/inscricoes` aceita a nova inscrição com o
+prazo novo. Como `expiresAt` de todos entra no snapshot de cada inscrição, a
+prorrogação recusa (409) se outro faltante fora do pedido tiver inscrição vigente:
+mudar o prazo dele quebraria a assinatura pendente desse outro. O progresso de
+outros signatários (status, campos) já fica fora do snapshot em ordem paralela, então
+reinscrever depois que outros assinaram é compatível. A migração recria o gatilho de
+guarda com um único ramo novo, que só libera a troca de `expiresAt` dentro da
+transação que gravou o recibo daquela chave (comparando o `xid8` gravado no recibo
+com a transação corrente), para aquele destinatário e instante exato. O ensaio
+local fixa esse ramo caso a caso e mata um mutante para cada condição.
+
+Contato (`POST …/contatos`, corpo estrito `{ chaveOperacao, recipientId, email }`;
+o e-mail é aparado, posto em minúsculas e validado): corrige o e-mail de um
+signatário que não assinou num envelope já enviado, sem quebrar os links dos
+demais. Mesmo transporte, trava `Read Committed` + `FOR UPDATE` e propriedade da
+ponte. Numa transação: exige envelope `PENDING` sem `REJECTED`, alvo SIGNER e
+`NOT_SIGNED`, e-mail diferente do atual e não usado por outro destinatário do
+envelope, e nenhum faltante com operação na ponte (`operacao-em-andamento`, com os
+`recipientId`: alguém está no meio da assinatura; repetir depois). Grava o recibo
+`semog_bridge.contact_receipts`, revoga a inscrição ativa de todos os faltantes
+(cada snapshot carrega o e-mail de todos os destinatários), troca
+`Recipient.email` pelo ramo novo do gatilho de guarda, grava um `RECIPIENT_UPDATED`
+nativo com `changes: [{ type: 'EMAIL', from, to }]` e reinscreve, a partir do
+envelope atual, cada faltante cuja inscrição ainda não tinha vencido, com o mesmo
+consentimento e o mesmo `expiraEm`. Os hashes de documento e consentimento não
+mudam, então o semogapp assina com o que já tinha (links presos ao `recipientId`);
+inscrições vencidas ficam revogadas e voltam pela prorrogação + `/inscricoes` no
+reenvio. A troca é uma atualização direta da linha: nenhum handler nativo de
+destinatário roda, nenhum job nem efeito no outbox é criado, e o Documenso não
+envia e-mail ao novo endereço. Mesma chave e corpo devolvem o recibo; corpo
+divergente recebe 409 `chave-reutilizada`. Resposta:
+
+```json
+{
+  "chaveOperacao": "…",
+  "envelopeId": "…",
+  "recipientId": 21,
+  "email": "novo.endereco@example.org",
+  "revogados": [21, 22, 23],
+  "reinscritos": [21, 22]
+}
+```
+
+Recusas 409 das rotas de envelope (`selos-parciais` e `prorrogacoes`) trazem um
+código estável e, quando for por destinatário, quem e por quê; nada de detalhe
+interno:
+
+```json
+{
+  "error": "Solicitação não autorizada ou inválida.",
+  "codigo": "destinatarios-inelegiveis",
+  "destinatarios": [{ "recipientId": 13, "motivo": "operacao-existente" }]
+}
+```
+
+`codigo`: `chave-reutilizada` (mesma chave com outro corpo, ou chave já gravada por
+outra requisição, inclusive de outro envelope, em vez do antigo 503),
+`rodada-ja-selada` (selo parcial: rodada já selada com outra chave),
+`envelope-nao-pendente`, `envelope-com-recusa`, `prazo-no-passado`,
+`operacao-em-andamento` (contato: faltante com operação; `destinatarios` com
+`motivo: operacao-existente`) e `destinatarios-inelegiveis`. Neste último, `destinatarios` lista todos os
+inelegíveis de uma vez, em ordem de `recipientId`, com `motivo`: `nao-encontrado`,
+`nao-signatario` (CC e outros papéis), `ja-assinou`, `operacao-existente`,
+`sem-prazo` (`expiresAt` nulo), `prazo-nao-avanca`, `email-inalterado`,
+`email-em-uso`, `reinscricao-impossivel` (contato) e `inscricao-vigente` (faltante
+fora do pedido com inscrição vigente; ele precisa entrar no pedido ou a inscrição
+vencer). Quem tem operação na ponte nunca é prorrogado: a unicidade
+`(envelopeId, recipientId)` de `operations` o impediria de assinar de novo. O
+semogapp pode repetir o pedido sem esses destinatários e sinalizá-los para
+tratamento manual. Os demais 409 (estado não selável do selo parcial) seguem sem
+corpo extra.
 
 Para habilitar depois de revisão e aplicação autorizada das migrações:
 
 - Criar o papel restrito com o par `2026-10-08-semog-service-role` antes dos
   demais pares. Ele não concede membership e recusa substituir um papel alheio.
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
-  `semog-activation` e, por último, `2026-10-07-semog-host.sql`.
+  `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
+  `2026-10-29-semog-partial-seal.sql`, `2026-10-29-semog-extension.sql` e
+  `2026-10-29-semog-contact.sql`. Sem as três últimas, só as rotas novas respondem
+  503; cada inverso recusa enquanto existir selo parcial ou recibo, o da prorrogação
+  restaura o gatilho de guarda idêntico ao de `2026-10-06-semog-signing-execution.sql`
+  e o do contato, idêntico ao da prorrogação. Como os
+  pares irmãos, aplicar com o papel dono das tabelas do Documenso — o mesmo da
+  conexão Prisma injetada no host —, para que a tabela pertença a ele (RLS ligada
+  sem `FORCE`, nenhum grant a `PUBLIC` ou a `semog_bridge_service`).
 - Configurar certificado local explicitamente em
   `NEXT_PRIVATE_SIGNING_LOCAL_FILE_PATH` ou `NEXT_PRIVATE_SIGNING_LOCAL_FILE_CONTENTS`,
   senha correspondente e transporte `local`. Não há fallback para certificado de exemplo.
@@ -53,7 +163,12 @@ node24 node_modules/typescript/bin/tsc --noEmit -p tsconfig.semog-signing.json
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-local.ts
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-db-local.ts
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-cms-local.ts
+SEMOG_PG_BIN=/opt/homebrew/bin node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-rounds-local.ts
 ```
+
+O último usa binários locais do PostgreSQL (sem Docker), cria e remove um diretório
+descartável e cobre selo parcial, concorrência, prorrogação e a selagem final depois
+da segunda rodada.
 
 `node24` representa o executável Node 24 efetivamente disponível. O primeiro
 script sobe HTTP em loopback com a mesma função de registro do roteador. O segundo

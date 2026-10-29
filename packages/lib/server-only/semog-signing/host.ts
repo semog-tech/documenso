@@ -4,8 +4,11 @@ import { z } from 'zod';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { mapSecondaryIdToDocumentId } from '../../utils/envelope';
 import { createSemogActivationRuntime } from './activation-runtime';
+import { SEMOG_CONTACT_PREFIX } from './contact-http';
 import { createSemogDraftRuntime } from './draft-runtime';
+import { SEMOG_EXTENSION_PREFIX } from './extension-http';
 import type { SemogOutboxEffect } from './outbox';
+import { SEMOG_PARTIAL_SEAL_PREFIX } from './partial-seal-http';
 import { createSemogSigningRuntime } from './runtime';
 
 type Dependencies = Parameters<typeof createSemogSigningRuntime>[0] & {
@@ -109,7 +112,13 @@ export const createSemogHost = (dependencies: Dependencies) => {
         ? draft.handler(request)
         : path.endsWith('/envelopes-ativacao')
           ? activation.handler(request)
-          : runtime.handler(request);
+          : SEMOG_PARTIAL_SEAL_PREFIX.test(path)
+            ? runtime.partialSealHandler(request)
+            : SEMOG_EXTENSION_PREFIX.test(path)
+              ? runtime.extensionHandler(request)
+              : SEMOG_CONTACT_PREFIX.test(path)
+                ? runtime.contactHandler(request)
+                : runtime.handler(request);
     },
     tick: runtime.outbox.tick,
     start: () => {

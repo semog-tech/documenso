@@ -37,6 +37,11 @@ export type CertificateRecipient = {
     signature?: Pick<Signature, 'signatureImageAsBase64' | 'typedSignature'> | null;
   };
   authLevel: string;
+  /**
+   * Semog fork: recipient who had not signed when a partial seal was rendered. Replaces the "Signed"
+   * detail and the role reason, which would otherwise claim an approval that never happened.
+   */
+  notSigned?: { label: string; value: string; reason: string };
   logs: {
     emailed: BaseAuditLog | null;
     sent: BaseAuditLog | null;
@@ -100,6 +105,8 @@ type RenderLabelAndTextOptions = {
   y?: number;
   labelFill?: string;
   valueFill?: string;
+  /** Semog fork: prose values wrap by word; the native default keeps 'char' for emails and IDs. */
+  wrap?: 'char' | 'word';
 };
 
 const renderLabelAndText = (options: RenderLabelAndTextOptions) => {
@@ -131,7 +138,7 @@ const renderLabelAndText = (options: RenderLabelAndTextOptions) => {
     fontFamily: 'Inter',
     text: options.text,
     fill: valueFill,
-    wrap: 'char',
+    wrap: options.wrap ?? 'char',
     fontSize: textSm,
   });
 
@@ -418,6 +425,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
     value: string;
     labelFill?: string;
     valueFill?: string;
+    wrap?: 'char' | 'word';
   };
 
   const itemsToRender: DetailItem[] = [
@@ -452,6 +460,14 @@ const renderColumnThree = (options: RenderColumnOptions) => {
       labelFill: textRejectedRed,
       valueFill: textRejectedRed,
     });
+  } else if (recipient.notSigned) {
+    itemsToRender.push({
+      label: recipient.notSigned.label,
+      value: recipient.notSigned.value,
+      labelFill: textRejectedRed,
+      valueFill: textRejectedRed,
+      wrap: 'word',
+    });
   } else {
     itemsToRender.push({
       label: i18n._(msg`Signed`),
@@ -467,12 +483,14 @@ const renderColumnThree = (options: RenderColumnOptions) => {
 
   itemsToRender.push({
     label: i18n._(msg`Reason`),
-    value:
-      recipient.signingStatus === SigningStatus.REJECTED
+    value: recipient.notSigned
+      ? recipient.notSigned.reason
+      : recipient.signingStatus === SigningStatus.REJECTED
         ? recipient.rejectionReason || ''
         : isOwner
           ? i18n._(msg`I am the owner of this document`)
           : i18n._(RECIPIENT_ROLE_SIGNING_REASONS[recipient.role]),
+    wrap: recipient.notSigned ? 'word' : undefined,
   });
 
   for (const [index, item] of itemsToRender.entries()) {
@@ -483,6 +501,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
       y: column.getClientRect().height + (index === 0 ? 0 : 8),
       labelFill: item.labelFill,
       valueFill: item.valueFill,
+      wrap: item.wrap,
     });
     column.add(labelAndText);
   }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { FieldWithSignature } from '@documenso/prisma/types/field-with-signature';
-import type { PDFPage, Signer } from '@libpdf/core';
+import type { Color, EmbeddedFont, PDFPage, Signer } from '@libpdf/core';
 import { PDF, rgb } from '@libpdf/core';
 import type { I18n } from '@lingui/core';
 import { Prisma } from '@prisma/client';
@@ -22,29 +22,61 @@ type Dependencies = {
   getDocumentI18n?: SemogDocumentI18n;
 };
 const denied = () => new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 409 });
-/** Same v2 field renderer and PDF signing library as the native sealer, with an injected certificate. */
-const stampRejected = (pdf: PDF, fontBytes: Uint8Array) => {
-  // Native rejection stamp geometry, with host-supplied Noto Sans instead of the native localhost fetch.
-  const font = pdf.embedFont(fontBytes),
-    title = 'DOCUMENT REJECTED',
-    size = 36;
+type DiagonalStamp = {
+  title: string;
+  color: Color;
+  size: (font: EmbeddedFont, page: PDFPage) => number;
+  /** Omitted for the native rejection stamp, which stays fully opaque. */
+  opacity?: number;
+};
+/** Native rejection stamp geometry, with host-supplied Noto Sans instead of the native localhost fetch. */
+const drawDiagonalStamp = (pdf: PDF, fontBytes: Uint8Array, stamp: DiagonalStamp) => {
+  const font = pdf.embedFont(fontBytes);
   for (const page of pdf.getPages()) {
-    const width = font.getTextWidth(title, size),
+    const size = stamp.size(font, page),
+      width = font.getTextWidth(stamp.title, size),
       x = page.width / 2,
       y = page.height / 2;
-    const color = rgb(220 / 255, 38 / 255, 38 / 255);
     page.drawRectangle({
       x: x - (width + 20) / 2,
       y: y - (size + 20) / 4,
       width: width + 20,
       height: size + 20,
-      borderColor: color,
+      borderColor: stamp.color,
       borderWidth: 4,
+      borderOpacity: stamp.opacity,
       rotate: { angle: 45, origin: 'center' },
     });
-    page.drawText(title, { x: x - width / 2, y, size, font, color, rotate: { angle: 45, origin: 'center' } });
+    page.drawText(stamp.title, {
+      x: x - width / 2,
+      y,
+      size,
+      font,
+      color: stamp.color,
+      opacity: stamp.opacity,
+      rotate: { angle: 45, origin: 'center' },
+    });
   }
 };
+/** Same v2 field renderer and PDF signing library as the native sealer, with an injected certificate. */
+const stampRejected = (pdf: PDF, fontBytes: Uint8Array) =>
+  drawDiagonalStamp(pdf, fontBytes, {
+    title: 'DOCUMENT REJECTED',
+    color: rgb(220 / 255, 38 / 255, 38 / 255),
+    size: () => 36,
+  });
+/**
+ * Rejection geometry; the longer label shrinks so its 45° box stays inside the smaller page side, and is
+ * translucent so the certificate rows underneath stay legible.
+ */
+export const stampSemogPartialSeal = (pdf: PDF, fontBytes: Uint8Array, title: string) =>
+  drawDiagonalStamp(pdf, fontBytes, {
+    title,
+    color: rgb(180 / 255, 83 / 255, 9 / 255),
+    opacity: 0.6,
+    size: (font, page) =>
+      Math.min(36, (Math.min(page.width, page.height) * 0.9 * Math.SQRT2 - 20) / font.getTextWidth(title, 1)),
+  });
 const pagePosition = (page: PDFPage) => {
   const coordinates: Record<number, { x: number; y: number }> = {
     0: { x: 0, y: 0 },
@@ -76,33 +108,44 @@ const insertNativeFieldPages = async (pdf: PDF, fields: FieldWithSignature[]) =>
     page.drawPage(embedded, { ...pagePosition(page), rotate: { angle: page.rotation } });
   }
 };
-const decorate = async (
-  bytes: Uint8Array,
-  fields: FieldWithSignature[],
-  signer: Signer,
-  rejectionFont: Uint8Array | null,
-  documentPages: Uint8Array[],
-) => {
+type DecorateOptions = {
+  fields: FieldWithSignature[];
+  signer: Signer;
+  rejectionFont: Uint8Array | null;
+  documentPages: Uint8Array[];
+  /** Runs after the appendix and fields, so it reaches every page of the sealed PDF. */
+  stampAllPages?: (pdf: PDF) => void;
+  /** Signature /Reason; the native seal keeps the stock value. */
+  reason?: string;
+};
+export const decorateSemogPdf = async (bytes: Uint8Array, options: DecorateOptions) => {
   const pdf = await PDF.load(bytes);
   pdf.flattenAll();
   pdf.upgradeVersion('1.7');
-  if (rejectionFont !== null) {
-    stampRejected(pdf, rejectionFont);
+  if (options.rejectionFont !== null) {
+    stampRejected(pdf, options.rejectionFont);
   }
-  for (const bytes of documentPages) {
-    const appendix = await PDF.load(bytes);
+  for (const page of options.documentPages) {
+    const appendix = await PDF.load(page);
     await pdf.copyPagesFrom(
       appendix,
       Array.from({ length: appendix.getPageCount() }, (_, index) => index),
     );
   }
-  await insertNativeFieldPages(pdf, fields);
+  await insertNativeFieldPages(pdf, options.fields);
+  options.stampAllPages?.(pdf);
   pdf.flattenAll();
   const normalized = await PDF.load(await pdf.save({ useXRefStream: true }));
-  return (await normalized.sign({ signer, reason: 'Signed by Documenso', subFilter: 'ETSI.CAdES.detached' })).bytes;
+  return (
+    await normalized.sign({
+      signer: options.signer,
+      reason: options.reason ?? 'Signed by Documenso',
+      subFilter: 'ETSI.CAdES.detached',
+    })
+  ).bytes;
 };
 
-const readSealingEnvelope = async (tx: Prisma.TransactionClient, actor: SemogActor, envelopeId: string) => {
+export const readSemogSealingEnvelope = async (tx: Prisma.TransactionClient, actor: SemogActor, envelopeId: string) => {
   const lock = await tx.$queryRaw<{ id: string }[]>(
     Prisma.sql`SELECT id FROM public."Envelope" WHERE id=${envelopeId} AND "teamId"=${actor.teamId} FOR UPDATE`,
   );
@@ -120,7 +163,8 @@ const readSealingEnvelope = async (tx: Prisma.TransactionClient, actor: SemogAct
     },
   });
 };
-type NativeEnvelope = Awaited<ReturnType<typeof readSealingEnvelope>>;
+export type SemogSealingEnvelope = Awaited<ReturnType<typeof readSemogSealingEnvelope>>;
+type NativeEnvelope = SemogSealingEnvelope;
 const assertSealable = (dependencies: Dependencies, envelope: NativeEnvelope) => {
   const rejected = envelope.recipients.some((recipient) => recipient.signingStatus === 'REJECTED');
   if (rejected && !dependencies.rejectionFont) {
@@ -163,13 +207,12 @@ const createItemPdf = async (
     { width: lastPage.width, height: lastPage.height },
     i18n,
   );
-  return await decorate(
-    pdf,
-    envelope.fields.filter((field) => field.envelopeItemId === item.id),
+  return await decorateSemogPdf(pdf, {
+    fields: envelope.fields.filter((field) => field.envelopeItemId === item.id),
     signer,
-    rejected ? (dependencies.rejectionFont ?? null) : null,
+    rejectionFont: rejected ? (dependencies.rejectionFont ?? null) : null,
     documentPages,
-  );
+  });
 };
 const persistSealedItems = async (
   tx: Prisma.TransactionClient,
@@ -211,7 +254,7 @@ const sealLocked = async (
   actor: SemogActor,
   envelopeId: string,
 ) => {
-  const envelope = await readSealingEnvelope(tx, actor, envelopeId);
+  const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId);
   if (envelope.status === 'COMPLETED' || envelope.status === 'REJECTED') {
     return { envelopeId, documentoConcluido: envelope.status === 'COMPLETED' };
   }

@@ -38,6 +38,39 @@ describe('mounted Semog host', () => {
     ).toBe(401);
     expect(query).not.toHaveBeenCalled();
   });
+  it('dispatches partial seal routes to their own handler, which rejects unknown subpaths before auth', async () => {
+    const query = vi.spyOn(client, '$queryRaw');
+    const host = createSemogHost({ enabled: true, client, onError: vi.fn() });
+    const response = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/selos-parciais/abc', {
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(response.status).toBe(404);
+    const unauthenticated = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/selos-parciais', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid', 'Content-Type': 'application/json' },
+        body: '{invalid',
+      }),
+    );
+    expect(unauthenticated.status).toBe(401);
+    const extension = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/prorrogacoes/extra', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(extension.status).toBe(404);
+    const contact = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/contatos/extra', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(contact.status).toBe(404);
+    expect(query).not.toHaveBeenCalled();
+  });
   it('polls seal-only queue autonomously without acknowledging suppressed email/webhooks', async () => {
     vi.useFakeTimers();
     const query = vi.spyOn(client, '$queryRaw').mockResolvedValue([{ body: null }]);
