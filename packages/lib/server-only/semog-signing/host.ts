@@ -5,6 +5,7 @@ import { AppError, AppErrorCode } from '../../errors/app-error';
 import { mapSecondaryIdToDocumentId } from '../../utils/envelope';
 import { createSemogActivationRuntime } from './activation-runtime';
 import { createSemogDraftRuntime } from './draft-runtime';
+import { SEMOG_EXTENSION_PREFIX } from './extension-http';
 import type { SemogOutboxEffect } from './outbox';
 import { SEMOG_PARTIAL_SEAL_PREFIX } from './partial-seal-http';
 import { createSemogSigningRuntime } from './runtime';
@@ -112,7 +113,9 @@ export const createSemogHost = (dependencies: Dependencies) => {
           ? activation.handler(request)
           : SEMOG_PARTIAL_SEAL_PREFIX.test(path)
             ? runtime.partialSealHandler(request)
-            : runtime.handler(request);
+            : SEMOG_EXTENSION_PREFIX.test(path)
+              ? runtime.extensionHandler(request)
+              : runtime.handler(request);
     },
     tick: runtime.outbox.tick,
     start: () => {

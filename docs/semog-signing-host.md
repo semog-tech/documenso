@@ -11,7 +11,8 @@ expiração, proprietário desabilitado e equipe antes de ler o JSON.
 Rotas: `envelopes-rascunho`, `envelopes-ativacao`, `inscricoes`,
 `manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao`,
 `manifestacoes/:chaveOperacao/pdf`, `envelopes/:envelopeId/selos-parciais` e
-`envelopes/:envelopeId/selos-parciais/:rodada/pdf`. Os contratos existentes não mudaram.
+`envelopes/:envelopeId/selos-parciais/:rodada/pdf` e `envelopes/:envelopeId/prorrogacoes`.
+Os contratos existentes não mudaram.
 
 Selo parcial (`POST …/selos-parciais`, corpo estrito `{ rodada, chaveOperacao }`):
 sela o que já foi assinado num envelope `PENDING` ativado pela ponte (v2, SES, um
@@ -32,14 +33,33 @@ estado atual e estável; uma segunda chamada simultânea da mesma rodada espera 
 lê o recibo gravado como replay. O `GET …/pdf` confere a
 equipe e o SHA-256 gravado antes de devolver os bytes.
 
+Prorrogação (`POST …/prorrogacoes`, corpo estrito `{ chaveOperacao, recipientIds[],
+expiraEm }`): reabre uma rodada para quem não assinou. Mesma trava `Read Committed`
++ `FOR UPDATE`, equipe e envelope ativado pela ponte; exige envelope `PENDING` sem
+`REJECTED`, cada destinatário SIGNER, `NOT_SIGNED`, sem operação na ponte, com
+`expiresAt` atual e `expiraEm` futuro e maior que ele. Revoga a inscrição ativa
+(`revogadaEm`, vencida ou não), grava `Recipient.expiresAt` e um `RECIPIENT_UPDATED`
+nativo por destinatário (o vocabulário nativo não tem diff de prazo; o instante fica
+no recibo `semog_bridge.extension_receipts`). Mesma chave e corpo devolvem o recibo;
+corpo divergente recebe 409. Depois disso `/inscricoes` aceita a nova inscrição com o
+prazo novo. Como `expiresAt` de todos entra no snapshot de cada inscrição, a
+prorrogação recusa (409) se outro faltante fora do pedido tiver inscrição vigente:
+mudar o prazo dele quebraria a assinatura pendente desse outro. O progresso de
+outros signatários (status, campos) já fica fora do snapshot em ordem paralela, então
+reinscrever depois que outros assinaram é compatível. A migração recria o gatilho de
+guarda com um único ramo novo, que só libera a troca de `expiresAt` dentro da
+transação que gravou o recibo daquela chave, para aquele destinatário e instante.
+
 Para habilitar depois de revisão e aplicação autorizada das migrações:
 
 - Criar o papel restrito com o par `2026-10-08-semog-service-role` antes dos
   demais pares. Ele não concede membership e recusa substituir um papel alheio.
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
   `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
-  `2026-10-29-semog-partial-seal.sql`. Sem esta última, só as rotas de selo
-  parcial respondem 503; o inverso recusa enquanto existir selo parcial. Como os
+  `2026-10-29-semog-partial-seal.sql` e `2026-10-29-semog-extension.sql`. Sem as
+  duas últimas, só as rotas novas respondem 503; cada inverso recusa enquanto existir
+  selo parcial ou recibo de prorrogação, e o da prorrogação restaura o gatilho de
+  guarda idêntico ao de `2026-10-06-semog-signing-execution.sql`. Como os
   pares irmãos, aplicar com o papel dono das tabelas do Documenso — o mesmo da
   conexão Prisma injetada no host —, para que a tabela pertença a ele (RLS ligada
   sem `FORCE`, nenhum grant a `PUBLIC` ou a `semog_bridge_service`).
@@ -78,7 +98,12 @@ node24 node_modules/typescript/bin/tsc --noEmit -p tsconfig.semog-signing.json
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-local.ts
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-db-local.ts
 node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-host-cms-local.ts
+SEMOG_PG_BIN=/opt/homebrew/bin node24 node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-rounds-local.ts
 ```
+
+O último usa binários locais do PostgreSQL (sem Docker), cria e remove um diretório
+descartável e cobre selo parcial, concorrência, prorrogação e a selagem final depois
+da segunda rodada.
 
 `node24` representa o executável Node 24 efetivamente disponível. O primeiro
 script sobe HTTP em loopback com a mesma função de registro do roteador. O segundo

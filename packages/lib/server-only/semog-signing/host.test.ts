@@ -55,6 +55,13 @@ describe('mounted Semog host', () => {
       }),
     );
     expect(unauthenticated.status).toBe(401);
+    const extension = await host.handler(
+      new Request('http://localhost/api/semog/v1/envelopes/env/prorrogacoes/extra', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer invalid' },
+      }),
+    );
+    expect(extension.status).toBe(404);
     expect(query).not.toHaveBeenCalled();
   });
   it('polls seal-only queue autonomously without acknowledging suppressed email/webhooks', async () => {

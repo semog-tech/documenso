@@ -3,6 +3,8 @@ import type { PrismaClient } from '@prisma/client';
 import { createSemogApiTokenAuthenticator } from './api-token';
 import type { SemogDocumentI18n } from './document-pages';
 import { createSemogPrismaExecutor } from './execution';
+import { createSemogExtensionHandler } from './extension-http';
+import { createSemogExtensionService } from './extension-service';
 import { createSemogSigningHandler } from './http';
 import { createSemogPdfReader } from './initial-pdf';
 import { readSemogNativeEnvelope } from './native-envelope';
@@ -70,6 +72,11 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     getDocumentI18n: dependencies.getDocumentI18n,
     authenticate: createSemogApiTokenAuthenticator(client),
   });
+  const extension = createSemogExtensionService({
+    enabled,
+    client,
+    authenticate: createSemogApiTokenAuthenticator(client),
+  });
   const outbox = createSemogOutboxWorker({
     enabled,
     client,
@@ -79,11 +86,13 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
   return {
     handler: createSemogSigningHandler(service),
     partialSealHandler: createSemogPartialSealHandler(partialSeal),
+    extensionHandler: createSemogExtensionHandler(extension),
     service,
     repository,
     executor,
     sealer,
     partialSeal,
+    extension,
     outbox,
   };
 };

@@ -11,8 +11,10 @@ import { join, resolve } from 'node:path';
 import { P12Signer, PDF } from '@libpdf/core';
 import { setupI18n } from '@lingui/core';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { createSemogHost } from '../packages/lib/server-only/semog-signing/host';
 import { createSemogPdfReader } from '../packages/lib/server-only/semog-signing/initial-pdf';
 import { createSemogPartialSealService } from '../packages/lib/server-only/semog-signing/partial-seal-service';
+import { createSemogSigningRuntime } from '../packages/lib/server-only/semog-signing/runtime';
 
 const workspace = process.cwd();
 const pgBin = process.env.SEMOG_PG_BIN ?? '/opt/homebrew/bin';
@@ -86,6 +88,14 @@ const startDatabase = async () => {
   ]) {
     await sql(await readFile(`db/${migration}.sql`, 'utf8'));
   }
+  // The extension pair is exercised up, down (restoring the guard verbatim) and up again.
+  await sql(await readFile('db/2026-10-29-semog-extension.sql', 'utf8'));
+  await sql(await readFile('db/2026-10-29-semog-extension.down.sql', 'utf8'));
+  check(
+    (await sql("SELECT to_regclass('semog_bridge.extension_receipts')")).trim() === '',
+    'extension down removes the receipts table',
+  );
+  await sql(await readFile('db/2026-10-29-semog-extension.sql', 'utf8'));
 };
 
 const createTeam = async (database: PrismaClient) => {
@@ -293,6 +303,144 @@ const concurrentRoundScenario = async (database: PrismaClient, owner: Team, serv
   check(Number(outbox[0].count) === 0, 'no outbox effect');
 };
 
+type Runtime = ReturnType<typeof createSemogSigningRuntime>;
+const enroll = async (runtime: Runtime, owner: Team, envelopeId: string, recipientId: number, expiraEm: string) =>
+  await runtime.service.enroll(owner.actor, { envelopeId, recipientId, consentimento: 'Li e concordo.', expiraEm });
+const sign = async (runtime: Runtime, owner: Team, envelope: Envelope, index: number, expiraEm: string) => {
+  const { recipient, field } = envelope.recipients[index];
+  const snapshot = await enroll(runtime, owner, envelope.envelopeId, recipient.id, expiraEm);
+  const chaveOperacao = randomUUID();
+  const result = await runtime.service.reserve(owner.actor, {
+    chaveOperacao,
+    envelopeId: envelope.envelopeId,
+    recipientId: recipient.id,
+    hashDocumento: snapshot.hashDocumento,
+    hashConsentimento: snapshot.hashConsentimento,
+    acao: 'assinar',
+    motivo: null,
+    campos: [{ fieldId: field.id, valor: recipient.name }],
+    evidencias: {
+      canal: 'email',
+      identificacaoId: `contato-${recipient.id}`,
+      confirmadoEm: new Date().toISOString(),
+      ip: null,
+      userAgent: null,
+    },
+  });
+  check(result.situacao === 'concluida', `recipient ${index + 1} signed through the bridge`);
+  return chaveOperacao;
+};
+const rejects = async (fn: () => Promise<unknown>) => {
+  try {
+    await fn();
+  } catch {
+    return true;
+  }
+  return false;
+};
+
+/** 5 signers; 2 sign; deadline passes; partial seal; extend the 3; re-enroll; they sign; native seal completes. */
+const roundsScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const runtime = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+  });
+  const firstDeadline = new Date(Date.now() + 12000).toISOString();
+  const envelope = await createEnvelope(database, owner, new Date(firstDeadline));
+  await sign(runtime, owner, envelope, 0, firstDeadline);
+  await sign(runtime, owner, envelope, 1, firstDeadline);
+  for (const index of [2, 3, 4]) {
+    await enroll(runtime, owner, envelope.envelopeId, envelope.recipients[index].recipient.id, firstDeadline);
+  }
+  await sleep(Math.max(0, Date.parse(firstDeadline) - Date.now()) + 500);
+  const missing = envelope.recipients.slice(2).map((entry) => entry.recipient.id);
+  check(
+    await rejects(() =>
+      enroll(runtime, owner, envelope.envelopeId, missing[0], new Date(Date.now() + 86400000).toISOString()),
+    ),
+    'after the deadline, a new enrollment is refused before the extension',
+  );
+  const round1 = await runtime.partialSeal.create(owner.actor, envelope.envelopeId, {
+    rodada: 1,
+    chaveOperacao: randomUUID(),
+  });
+  check(round1.assinados === 2 && round1.total === 5, 'round 1 partial seal: 2 of 5');
+  const round1Pdf = await runtime.partialSeal.pdf(owner.actor, envelope.envelopeId, 1);
+  check(
+    await rejects(() =>
+      database.recipient.update({ where: { id: missing[0] }, data: { expiresAt: new Date(Date.now() + 86400000) } }),
+    ),
+    'guard still refuses a direct expiresAt change without the extension receipt',
+  );
+  const secondDeadline = new Date(Date.now() + 86400000).toISOString();
+  const extension = { chaveOperacao: randomUUID(), recipientIds: missing, expiraEm: secondDeadline };
+  const extended = await runtime.extension.create(owner.actor, envelope.envelopeId, extension);
+  check(extended.snapshotsRevogados === 3, 'extension revokes the 3 expired enrollments');
+  const replay = await runtime.extension.create(owner.actor, envelope.envelopeId, extension);
+  check(JSON.stringify(replay) === JSON.stringify(extended), 'extension replay returns the same receipt');
+  check(
+    await rejects(() =>
+      runtime.extension.create(owner.actor, envelope.envelopeId, { ...extension, recipientIds: missing.slice(0, 1) }),
+    ),
+    'reused key with a different body is refused',
+  );
+  check(
+    await rejects(() =>
+      runtime.extension.create(owner.actor, envelope.envelopeId, {
+        chaveOperacao: randomUUID(),
+        recipientIds: [envelope.recipients[0].recipient.id],
+        expiraEm: new Date(Date.now() + 2 * 86400000).toISOString(),
+      }),
+    ),
+    'extension of a recipient who signed is refused',
+  );
+  const recipients = await database.recipient.findMany({ where: { id: { in: missing } } });
+  check(
+    recipients.every((r) => r.expiresAt?.toISOString() === secondDeadline),
+    'Recipient.expiresAt moved to the new deadline',
+  );
+  const audits = await database.documentAuditLog.count({
+    where: { envelopeId: envelope.envelopeId, type: 'RECIPIENT_UPDATED' },
+  });
+  check(audits === 3, 'one RECIPIENT_UPDATED audit per extended recipient');
+  const keys = [];
+  for (const index of [2, 3, 4]) {
+    keys.push(await sign(runtime, owner, envelope, index, secondDeadline));
+  }
+  const host = createSemogHost({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+    onError: (error) => console.error(error),
+  });
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const native = await database.envelope.findUniqueOrThrow({ where: { id: envelope.envelopeId } });
+    if (native.status === 'COMPLETED') {
+      break;
+    }
+    await host.tick();
+  }
+  const final = await database.envelope.findUniqueOrThrow({
+    where: { id: envelope.envelopeId },
+    include: { envelopeItems: { include: { documentData: true } } },
+  });
+  check(final.status === 'COMPLETED' && final.completedAt !== null, 'native full seal completed the envelope');
+  const finalPdf = await runtime.executor.pdf?.(owner.actor, keys[2]);
+  check(
+    finalPdf !== undefined && Buffer.from(finalPdf).toString('latin1').includes('/ETSI.CAdES.detached'),
+    'final sealed PDF available',
+  );
+  const kept = await runtime.partialSeal.pdf(owner.actor, envelope.envelopeId, 1);
+  check(Buffer.compare(Buffer.from(kept), Buffer.from(round1Pdf)) === 0, 'round 1 partial seal row and PDF intact');
+  const down = await readFile(resolve(workspace, 'db/2026-10-29-semog-extension.down.sql'), 'utf8');
+  check(await rejects(() => sql(down)), 'extension down refuses while receipts exist');
+};
+
 const createServices = async (database: PrismaClient, actor: Team['actor']) => {
   const signer = await P12Signer.create(await readFile(resolve(workspace, 'apps/remix/example/cert.p12')), '', {
     buildChain: false,
@@ -323,6 +471,7 @@ try {
   const services = await createServices(client, owner.actor);
   await staleSnapshotScenario(client, owner, services);
   await concurrentRoundScenario(client, owner, services);
+  await roundsScenario(client, owner, services);
 } finally {
   process.chdir(workspace);
   await client?.$disconnect();
