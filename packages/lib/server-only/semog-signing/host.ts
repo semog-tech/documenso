@@ -6,6 +6,7 @@ import { mapSecondaryIdToDocumentId } from '../../utils/envelope';
 import { createSemogActivationRuntime } from './activation-runtime';
 import { createSemogDraftRuntime } from './draft-runtime';
 import type { SemogOutboxEffect } from './outbox';
+import { SEMOG_PARTIAL_SEAL_PREFIX } from './partial-seal-http';
 import { createSemogSigningRuntime } from './runtime';
 
 type Dependencies = Parameters<typeof createSemogSigningRuntime>[0] & {
@@ -109,7 +110,9 @@ export const createSemogHost = (dependencies: Dependencies) => {
         ? draft.handler(request)
         : path.endsWith('/envelopes-ativacao')
           ? activation.handler(request)
-          : runtime.handler(request);
+          : SEMOG_PARTIAL_SEAL_PREFIX.test(path)
+            ? runtime.partialSealHandler(request)
+            : runtime.handler(request);
     },
     tick: runtime.outbox.tick,
     start: () => {

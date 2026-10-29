@@ -9,15 +9,33 @@ host devolve 404 e não lê o corpo. As factories verificam token API nativo,
 expiração, proprietário desabilitado e equipe antes de ler o JSON.
 
 Rotas: `envelopes-rascunho`, `envelopes-ativacao`, `inscricoes`,
-`manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao` e
-`manifestacoes/:chaveOperacao/pdf`. Os contratos existentes não mudaram.
+`manifestacoes`, `manifestacoes-visuais`, `manifestacoes/:chaveOperacao`,
+`manifestacoes/:chaveOperacao/pdf`, `envelopes/:envelopeId/selos-parciais` e
+`envelopes/:envelopeId/selos-parciais/:rodada/pdf`. Os contratos existentes não mudaram.
+
+Selo parcial (`POST …/selos-parciais`, corpo estrito `{ rodada, chaveOperacao }`):
+sela o que já foi assinado num envelope `PENDING` ativado pela ponte (v2, SES, um
+item, sem `REJECTED`, ao menos um faltante), com o mesmo renderizador, certificado
+e CMS detached da selagem final, e o carimbo "SELO PARCIAL · n de N · dd/mm/aaaa"
+(dia em America/Recife) em todas as páginas, certificado e auditoria inclusive. No
+certificado, quem não assinou aparece sem caixa nem ID de assinatura e com
+"Não assinou — selo parcial n de N" no lugar do motivo nativo. Grava um
+`DocumentData` novo e uma linha em `semog_bridge.partial_seals`; não altera status,
+`completedAt`, destinatários, item do envelope, auditoria nem outbox. Mesma chave e
+mesma rodada devolvem o mesmo recibo sem renderizar; chave ou rodada divergente
+recebe 409, e todos assinados também (o PDF final pertence à selagem nativa).
+Duas chamadas simultâneas da mesma rodada se resolvem por `Serializable` + `FOR
+UPDATE`: a perdedora recebe 40001 e repete como replay. O `GET …/pdf` confere a
+equipe e o SHA-256 gravado antes de devolver os bytes.
 
 Para habilitar depois de revisão e aplicação autorizada das migrações:
 
 - Criar o papel restrito com o par `2026-10-08-semog-service-role` antes dos
   demais pares. Ele não concede membership e recusa substituir um papel alheio.
 - Aplicar os pares `semog-signing`, `semog-signing-execution`, `semog-draft`,
-  `semog-activation` e, por último, `2026-10-07-semog-host.sql`.
+  `semog-activation`, `2026-10-07-semog-host.sql` e, por último,
+  `2026-10-29-semog-partial-seal.sql`. Sem esta última, só as rotas de selo
+  parcial respondem 503; o inverso recusa enquanto existir selo parcial.
 - Configurar certificado local explicitamente em
   `NEXT_PRIVATE_SIGNING_LOCAL_FILE_PATH` ou `NEXT_PRIVATE_SIGNING_LOCAL_FILE_CONTENTS`,
   senha correspondente e transporte `local`. Não há fallback para certificado de exemplo.

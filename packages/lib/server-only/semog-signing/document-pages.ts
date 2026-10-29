@@ -94,6 +94,18 @@ const certificateRecipient = (
   },
 });
 
+export type SemogPartialSealCount = { assinados: number; total: number };
+/** Partial seal: no signature box or ID for a recipient who never signed, and an explicit n-of-N status. */
+const markNotSigned = (recipient: CertificateRecipient, count: SemogPartialSealCount): CertificateRecipient => ({
+  ...recipient,
+  signatureField: undefined,
+  notSigned: {
+    label: 'Situação',
+    value: `Não assinou — selo parcial ${count.assinados} de ${count.total}`,
+    reason: 'Sem assinatura até o fechamento desta rodada',
+  },
+});
+
 const readPageEvidence = async (tx: Prisma.TransactionClient, envelope: NativePagesEnvelope) => {
   const claim = await tx.organisationClaim.findFirst({
     where: { organisation: { teams: { some: { id: envelope.teamId } } } },
@@ -120,6 +132,7 @@ export const renderSemogDocumentPages = async (
   envelope: NativePagesEnvelope,
   dimensions: { width: number; height: number },
   i18n: I18n,
+  partial?: SemogPartialSealCount,
 ) => {
   if (i18n.locale !== ZSupportedLanguageCodeSchema.parse(envelope.documentMeta.language)) {
     throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
@@ -136,7 +149,12 @@ export const renderSemogDocumentPages = async (
     ...common,
     envelopeId: envelope.id,
     qrToken: envelope.qrToken,
-    recipients: envelope.recipients.map((recipient) => certificateRecipient(recipient, envelope, logs, channels, i18n)),
+    recipients: envelope.recipients.map((recipient) => {
+      const row = certificateRecipient(recipient, envelope, logs, channels, i18n);
+      return partial && recipient.role !== 'CC' && recipient.signingStatus !== 'SIGNED'
+        ? markNotSigned(row, partial)
+        : row;
+    }),
   });
   const audit = await renderAuditLogs({
     ...common,

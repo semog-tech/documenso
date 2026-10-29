@@ -8,6 +8,8 @@ import { createSemogPdfReader } from './initial-pdf';
 import { readSemogNativeEnvelope } from './native-envelope';
 import type { SemogOutboxEffect } from './outbox';
 import { createSemogOutboxWorker } from './outbox';
+import { createSemogPartialSealHandler } from './partial-seal-http';
+import { createSemogPartialSealService } from './partial-seal-service';
 import { createSemogSigningPostgresClient, createSemogSigningRepository } from './repository';
 import { createSemogPrismaSealer } from './sealing';
 import { createSemogSigningService } from './service';
@@ -58,11 +60,30 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     rejectionFont: dependencies.rejectionFont,
     getDocumentI18n: dependencies.getDocumentI18n,
   });
+  // Same signer, font and catalogue as the native seal; the round PDF never replaces the envelope document.
+  const partialSeal = createSemogPartialSealService({
+    enabled,
+    client,
+    readPdf,
+    signer: dependencies.signer,
+    stampFont: dependencies.rejectionFont,
+    getDocumentI18n: dependencies.getDocumentI18n,
+    authenticate: createSemogApiTokenAuthenticator(client),
+  });
   const outbox = createSemogOutboxWorker({
     enabled,
     client,
     deliver: dependencies.deliver,
     sealOnly: dependencies.sealOnly,
   });
-  return { handler: createSemogSigningHandler(service), service, repository, executor, sealer, outbox };
+  return {
+    handler: createSemogSigningHandler(service),
+    partialSealHandler: createSemogPartialSealHandler(partialSeal),
+    service,
+    repository,
+    executor,
+    sealer,
+    partialSeal,
+    outbox,
+  };
 };
