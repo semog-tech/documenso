@@ -1,6 +1,6 @@
 /**
- * Disposable PostgreSQL rehearsal of the closing rounds (partial seal and deadline extension), including the
- * guard-trigger branch and its mutants. Run it with vite-node and the lib Vitest config, which compiles the
+ * Disposable PostgreSQL rehearsal of the closing rounds (partial seal and deadline extension), contact change and
+ * envelope cancellation, including the guard-trigger branches and their mutants. Run it with vite-node and the lib Vitest config, which compiles the
  * Lingui macros the native renderers use (plain tsx cannot):
  *   node node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-rounds-local.ts
  * Uses local PostgreSQL binaries instead of Docker: SEMOG_PG_BIN (default /opt/homebrew/bin) and an
@@ -109,6 +109,20 @@ const startDatabase = async () => {
     'contact down removes the receipts table',
   );
   await sql(await readFile('db/2026-10-29-semog-contact.sql', 'utf8'));
+  // The cancel pair: up, down (restoring the contact guard verbatim) and up again.
+  await sql(await readFile('db/2026-10-30-semog-cancel.sql', 'utf8'));
+  await sql(await readFile('db/2026-10-30-semog-cancel.down.sql', 'utf8'));
+  check(
+    (await sql("SELECT to_regclass('semog_bridge.cancel_receipts')")).trim() === '' &&
+      (await sql("SELECT to_regprocedure('semog_bridge.cancel_allows(text)')")).trim() === '',
+    'cancel down removes the receipts table and cancel_allows',
+  );
+  const restoredGuard = await sql("SELECT prosrc FROM pg_proc WHERE proname='guard_native_mutation'");
+  check(
+    restoredGuard.includes('contact_allows') && !restoredGuard.includes('cancel_allows'),
+    'cancel down restores the contact guard',
+  );
+  await sql(await readFile('db/2026-10-30-semog-cancel.sql', 'utf8'));
 };
 
 const createTeam = async (database: PrismaClient) => {
@@ -465,6 +479,7 @@ const roundsScenario = async (database: PrismaClient, owner: Team, services: Ser
 
 const EXTENSION_SQL = 'db/2026-10-29-semog-extension.sql';
 const CONTACT_SQL = 'db/2026-10-29-semog-contact.sql';
+const CANCEL_SQL = 'db/2026-10-30-semog-cancel.sql';
 const GUARD_EXPIRY = '2099-01-01T02:59:59.000Z';
 type GuardFixture = { envelopeId: string; teamId: number; userId: number; open: number; other: number; signed: number };
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -590,8 +605,8 @@ const mutantScenario = async (fixture: GuardFixture, oldKey: string) => {
     'CREATE FUNCTION',
     'CREATE OR REPLACE FUNCTION',
   );
-  // The guard in force is the latest migration's (contact), which still carries the extension branch.
-  const latest = await readFile(resolve(workspace, CONTACT_SQL), 'utf8');
+  // The guard in force is the latest migration's (cancel), which still carries the extension branch.
+  const latest = await readFile(resolve(workspace, CANCEL_SQL), 'utf8');
   const guard = extractBlock(latest, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
   const mutants: { name: string; guard?: string; allows?: string; killer: GuardCase }[] = [
     {
@@ -743,7 +758,9 @@ const contactGuardScenario = async (database: PrismaClient, owner: Team) => {
     check(wasAllowed === expected(name), `contact guard: ${name}`);
   }
   const up = await readFile(resolve(workspace, CONTACT_SQL), 'utf8');
-  const guard = extractBlock(up, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
+  // The guard in force is the latest migration's (cancel), which still carries the contact branch.
+  const latest = await readFile(resolve(workspace, CANCEL_SQL), 'utf8');
+  const guard = extractBlock(latest, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
   const allows = extractBlock(up, 'CREATE FUNCTION semog_bridge.contact_allows', '$$;').replace(
     'CREATE FUNCTION',
     'CREATE OR REPLACE FUNCTION',
@@ -949,6 +966,364 @@ const closedContactScenario = async (database: PrismaClient, owner: Team, servic
   check(await rejects(() => sql(down)), 'contact down refuses while receipts exist');
 };
 
+// ---- Envelope cancellation ------------------------------------------------------------------------
+
+type CancelFixture = { teamId: number; userId: number; pending: string; other: string; completed: string };
+const CANCEL_SET = `status='CANCELLED',"completedAt"=now(),"updatedAt"=now()`;
+/** One transaction: optional capability, optional receipt written in it, then the Envelope update. */
+const cancelStatement = (
+  fixture: CancelFixture,
+  options: { key?: string; receipt?: { key: string; envelopeId: string }; envelopeId: string; set: string },
+) => `BEGIN;
+${options.key === undefined ? '' : `SELECT set_config('semog_bridge.cancel_key',${literal(options.key)},true);`}
+${
+  options.receipt
+    ? `INSERT INTO semog_bridge.cancel_receipts ("chaveOperacao","envelopeId","teamId","userId",motivo,hash)
+  VALUES (${literal(options.receipt.key)}::uuid,${literal(options.receipt.envelopeId)},${fixture.teamId},${fixture.userId},
+  'Ensaio',${literal('a'.repeat(64))});`
+    : ''
+}
+UPDATE public."Envelope" SET ${options.set} WHERE id=${literal(options.envelopeId)};
+ROLLBACK;`;
+
+const cancelCases = async (fixture: CancelFixture, oldKey: string) => {
+  const key = randomUUID();
+  const own = (envelopeId: string) => ({ key, receipt: { key, envelopeId } });
+  const { pending } = fixture;
+  return {
+    'PENDING to CANCELLED, own receipt (allowed)': await allowed(
+      cancelStatement(fixture, { ...own(pending), envelopeId: pending, set: CANCEL_SET }),
+    ),
+    'native: updatedAt only (allowed)': await allowed(
+      cancelStatement(fixture, { envelopeId: pending, set: `"updatedAt"=now()` }),
+    ),
+    'native cancel without receipt (#657 statement)': await allowed(
+      cancelStatement(fixture, { envelopeId: pending, set: `status='CANCELLED',"completedAt"=now()` }),
+    ),
+    'receipt from an earlier transaction': await allowed(
+      cancelStatement(fixture, { key: oldKey, envelopeId: pending, set: CANCEL_SET }),
+    ),
+    'receipt of another envelope': await allowed(
+      cancelStatement(fixture, { ...own(fixture.other), envelopeId: pending, set: CANCEL_SET }),
+    ),
+    'key not set': await allowed(
+      cancelStatement(fixture, { receipt: own(pending).receipt, envelopeId: pending, set: CANCEL_SET }),
+    ),
+    'key names another receipt': await allowed(
+      cancelStatement(fixture, {
+        key: randomUUID(),
+        receipt: own(pending).receipt,
+        envelopeId: pending,
+        set: CANCEL_SET,
+      }),
+    ),
+    'cancel + title': await allowed(
+      cancelStatement(fixture, { ...own(pending), envelopeId: pending, set: `${CANCEL_SET},title='Outro'` }),
+    ),
+    'to COMPLETED with a cancel receipt': await allowed(
+      cancelStatement(fixture, {
+        ...own(pending),
+        envelopeId: pending,
+        set: `status='COMPLETED',"completedAt"=now()`,
+      }),
+    ),
+    'to CANCELLED without completedAt': await allowed(
+      cancelStatement(fixture, { ...own(pending), envelopeId: pending, set: `status='CANCELLED'` }),
+    ),
+    'from COMPLETED with its own receipt': await allowed(
+      cancelStatement(fixture, { ...own(fixture.completed), envelopeId: fixture.completed, set: CANCEL_SET }),
+    ),
+  };
+};
+type CancelCase = keyof Awaited<ReturnType<typeof cancelCases>>;
+const CANCEL_ALLOWED: string[] = ['PENDING to CANCELLED, own receipt (allowed)', 'native: updatedAt only (allowed)'];
+
+const armEnvelope = async (owner: Team, envelope: Envelope) =>
+  await sql(`INSERT INTO semog_bridge.snapshots (id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+    VALUES (gen_random_uuid(),${owner.team.id},${literal(envelope.envelopeId)},${envelope.recipients[4].recipient.id},${literal('a'.repeat(64))},${literal('a'.repeat(64))},${literal('a'.repeat(64))},now()+interval '1 day','{}'::jsonb)`);
+
+const cancelGuardScenario = async (database: PrismaClient, owner: Team) => {
+  const [pending, other, completed] = [
+    await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z')),
+    await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z')),
+    await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z')),
+  ];
+  // Closed before it is armed, so the guard is dormant for this change.
+  await database.envelope.update({
+    where: { id: completed.envelopeId },
+    data: { status: 'COMPLETED', completedAt: new Date() },
+  });
+  for (const envelope of [pending, other, completed]) {
+    await armEnvelope(owner, envelope);
+  }
+  const fixture = {
+    teamId: owner.team.id,
+    userId: owner.user.id,
+    pending: pending.envelopeId,
+    other: other.envelopeId,
+    completed: completed.envelopeId,
+  };
+  const oldKey = randomUUID();
+  await sql(`INSERT INTO semog_bridge.cancel_receipts ("chaveOperacao","envelopeId","teamId","userId",motivo,hash)
+    VALUES (${literal(oldKey)}::uuid,${literal(pending.envelopeId)},${owner.team.id},${owner.user.id},'Ensaio',${literal('a'.repeat(64))})`);
+  const expected = (name: string) => CANCEL_ALLOWED.includes(name);
+  for (const [name, wasAllowed] of Object.entries(await cancelCases(fixture, oldKey))) {
+    check(wasAllowed === expected(name), `cancel guard: ${name}`);
+  }
+  const up = await readFile(resolve(workspace, CANCEL_SQL), 'utf8');
+  const guard = extractBlock(up, 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()', 'END $$;');
+  const allows = extractBlock(up, 'CREATE FUNCTION semog_bridge.cancel_allows', '$$;').replace(
+    'CREATE FUNCTION',
+    'CREATE OR REPLACE FUNCTION',
+  );
+  const keyEquality = `r."chaveOperacao"::text=current_setting('semog_bridge.cancel_key',true)`;
+  const mutants: { name: string; guard?: string; allows?: string; killer: CancelCase }[] = [
+    {
+      name: 'other columns allowed with the cancel',
+      guard: mutate(
+        guard,
+        "AND (after-ARRAY['status','completedAt','updatedAt'])=(before-ARRAY['status','completedAt','updatedAt'])\n    AND semog_bridge.cancel_allows(env)",
+        'AND semog_bridge.cancel_allows(env)',
+      ),
+      killer: 'cancel + title',
+    },
+    {
+      name: 'PENDING condition dropped',
+      guard: mutate(
+        guard,
+        "TG_OP='UPDATE' AND before->>'status'='PENDING'\n    AND after->>'status'='CANCELLED'",
+        "TG_OP='UPDATE'\n    AND after->>'status'='CANCELLED'",
+      ),
+      killer: 'from COMPLETED with its own receipt',
+    },
+    {
+      name: 'any target status',
+      guard: mutate(
+        guard,
+        "AND after->>'status'='CANCELLED' AND after->>'completedAt' IS NOT NULL",
+        "AND after->>'completedAt' IS NOT NULL",
+      ),
+      killer: 'to COMPLETED with a cancel receipt',
+    },
+    {
+      name: 'completedAt condition dropped',
+      guard: mutate(
+        guard,
+        "after->>'status'='CANCELLED' AND after->>'completedAt' IS NOT NULL",
+        "after->>'status'='CANCELLED'",
+      ),
+      killer: 'to CANCELLED without completedAt',
+    },
+    {
+      name: 'cancel_allows ignores the envelope',
+      allows: mutate(allows, '\n      AND r."envelopeId"=p_envelope', ''),
+      killer: 'receipt of another envelope',
+    },
+    {
+      name: 'cancel_allows accepts receipts of other transactions',
+      allows: mutate(allows, 'r.transacao=pg_current_xact_id_if_assigned()', 'true'),
+      killer: 'receipt from an earlier transaction',
+    },
+    {
+      name: 'cancel_allows ignores the key value',
+      allows: mutate(allows, keyEquality, 'true'),
+      killer: 'key names another receipt',
+    },
+    {
+      name: 'cancel_allows ignores whether a key is set',
+      allows: mutate(
+        mutate(allows, keyEquality, 'true'),
+        "COALESCE(current_setting('semog_bridge.cancel_key',true),'')<>'' AND ",
+        '',
+      ),
+      killer: 'key not set',
+    },
+  ];
+  for (const mutant of mutants) {
+    await sql(`${mutant.guard ?? ''}\n${mutant.allows ?? ''}`);
+    const results = await cancelCases(fixture, oldKey);
+    await sql(`${guard}\n${allows}`);
+    check(results[mutant.killer], `cancel mutant killed: ${mutant.name} (by "${mutant.killer}")`);
+  }
+  const restored = await cancelCases(fixture, oldKey);
+  check(
+    Object.entries(restored).every(([name, wasAllowed]) => wasAllowed === expected(name)),
+    'cancel guard restored after the mutants',
+  );
+};
+
+const liveSnapshots = async (envelopeId: string) =>
+  Number(
+    (
+      await sql(
+        `SELECT count(*) FROM semog_bridge.snapshots WHERE "envelopeId"=${literal(envelopeId)} AND "revogadaEm" IS NULL`,
+      )
+    ).trim(),
+  );
+const cancelReceipts = async (envelopeId: string) =>
+  Number(
+    (await sql(`SELECT count(*) FROM semog_bridge.cancel_receipts WHERE "envelopeId"=${literal(envelopeId)}`)).trim(),
+  );
+
+/** 5 signers, 1 signs, 4 enrolled live: the bridge cancels it durably where the native cancel is refused (#657). */
+const cancelScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const runtime = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+  });
+  const deadline = new Date(Date.now() + 86400000).toISOString();
+  const envelope = await createEnvelope(database, owner, new Date(deadline));
+  const { envelopeId } = envelope;
+  await sign(runtime, owner, envelope, 0, deadline);
+  for (const index of [1, 2, 3, 4]) {
+    await enroll(runtime, owner, envelopeId, envelope.recipients[index].recipient.id, deadline);
+  }
+  const live = await liveSnapshots(envelopeId);
+  check(live >= 4, `envelope enrolled with ${live} live snapshots`);
+  check(
+    await rejects(() =>
+      sql(`UPDATE public."Envelope" SET status='CANCELLED',"completedAt"=now() WHERE id=${literal(envelopeId)}`),
+    ),
+    'native cancel statement is still refused by the guard (the #657 500)',
+  );
+  check(
+    await rejects(() =>
+      database.envelope.update({ where: { id: envelopeId }, data: { status: 'CANCELLED', completedAt: new Date() } }),
+    ),
+    'native cancel through Prisma (cancel-document.ts shape) is still refused',
+  );
+
+  // A reserved but unexecuted manifestation blocks the cancellation; nothing moves.
+  const pending = randomUUID();
+  await sql(`INSERT INTO semog_bridge.operations ("chaveOperacao","snapshotId","teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",acao,"hashPedido",pedido,evidencias)
+    SELECT ${literal(pending)}::uuid,id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",'assinar',${literal('a'.repeat(64))},'{}'::jsonb,'{}'::jsonb
+    FROM semog_bridge.snapshots WHERE "envelopeId"=${literal(envelopeId)} AND "recipientId"=${envelope.recipients[2].recipient.id} AND "revogadaEm" IS NULL`);
+  const motivo = 'Assembleia remarcada pelo síndico.';
+  const blocked = await refusalCode(() =>
+    runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao: randomUUID(), motivo }),
+  );
+  check(blocked === 'operacao-em-andamento', `operation in flight refuses the cancellation (${blocked})`);
+  await sql(`DELETE FROM semog_bridge.operations WHERE "chaveOperacao"=${literal(pending)}::uuid`);
+  const stillPending = await database.envelope.findUniqueOrThrow({ where: { id: envelopeId } });
+  check(
+    stillPending.status === 'PENDING' &&
+      (await liveSnapshots(envelopeId)) === live &&
+      (await cancelReceipts(envelopeId)) === 0,
+    'refusal changed nothing',
+  );
+
+  // Discriminator: with the guard of the previous migration (no cancel branch), the same call fails and rolls back.
+  const cancelUp = await readFile(resolve(workspace, CANCEL_SQL), 'utf8');
+  const contactUp = await readFile(resolve(workspace, CONTACT_SQL), 'utf8');
+  const marker = 'CREATE OR REPLACE FUNCTION semog_bridge.guard_native_mutation()';
+  await sql(extractBlock(contactUp, marker, 'END $$;'));
+  const nativeBefore = await rejects(() =>
+    sql(`UPDATE public."Envelope" SET status='CANCELLED',"completedAt"=now() WHERE id=${literal(envelopeId)}`),
+  );
+  const withoutBranch = await refusalCode(() =>
+    runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao: randomUUID(), motivo }),
+  );
+  await sql(extractBlock(cancelUp, marker, 'END $$;'));
+  check(nativeBefore, 'before this migration (contact guard) the native cancel statement is refused (#657)');
+  const untouched = await database.envelope.findUniqueOrThrow({ where: { id: envelopeId } });
+  check(
+    withoutBranch === 'other' &&
+      untouched.status === 'PENDING' &&
+      (await liveSnapshots(envelopeId)) === live &&
+      (await cancelReceipts(envelopeId)) === 0,
+    `without the cancel branch the bridge cancel fails and rolls back (${withoutBranch})`,
+  );
+
+  const before = await countSideEffects(database, envelopeId);
+  const chaveOperacao = randomUUID();
+  const result = await runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao, motivo: `  ${motivo} ` });
+  const final = await database.envelope.findUniqueOrThrow({ where: { id: envelopeId } });
+  check(
+    result.situacao === 'cancelado' && result.chaveOperacao === chaveOperacao && result.envelopeId === envelopeId,
+    'bridge cancel answers cancelado',
+  );
+  check(
+    final.status === 'CANCELLED' && final.completedAt?.toISOString() === result.canceladoEm,
+    'Envelope CANCELLED with completedAt = canceladoEm',
+  );
+  check(
+    result.revogados === live && (await liveSnapshots(envelopeId)) === 0,
+    `every live snapshot revoked (${result.revogados})`,
+  );
+  const audit = await database.documentAuditLog.findMany({ where: { envelopeId, type: 'DOCUMENT_CANCELLED' } });
+  check(
+    audit.length === 1 &&
+      JSON.stringify(audit[0].data) === JSON.stringify({ reason: motivo }) &&
+      audit[0].userId === owner.user.id,
+    'one DOCUMENT_CANCELLED audit with the trimmed reason and the actor',
+  );
+  const stored = await sql(
+    `SELECT resultado::text FROM semog_bridge.cancel_receipts WHERE "chaveOperacao"=${literal(chaveOperacao)}::uuid AND motivo=${literal(motivo)}`,
+  );
+  // jsonb reorders keys, so compare entry by entry.
+  const sorted = (value: object) => JSON.stringify(Object.entries(value).sort());
+  check(
+    stored.trim() !== '' && sorted(JSON.parse(stored)) === sorted(result),
+    'receipt stores the result and the reason',
+  );
+  const after = await countSideEffects(database, envelopeId);
+  check(after.outbox === before.outbox && after.jobs === before.jobs, 'no outbox effect and no native job (no e-mail)');
+  const replay = await runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao, motivo });
+  check(JSON.stringify(replay) === JSON.stringify(result), 'replay after the cancellation returns the same result');
+  const reused = await refusalCode(() =>
+    runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao, motivo: 'Outro motivo' }),
+  );
+  check(reused === 'chave-reutilizada', `same key, other reason → ${reused}`);
+  const second = await refusalCode(() =>
+    runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao: randomUUID(), motivo }),
+  );
+  check(second === 'envelope-nao-pendente', `second key on the cancelled envelope → ${second}`);
+  check(
+    (await database.documentAuditLog.count({ where: { envelopeId, type: 'DOCUMENT_CANCELLED' } })) === 1 &&
+      (await cancelReceipts(envelopeId)) === 1,
+    'replay and refusals wrote nothing',
+  );
+  const down = await readFile(resolve(workspace, 'db/2026-10-30-semog-cancel.down.sql'), 'utf8');
+  check(await rejects(() => sql(down)), 'cancel down refuses while receipts exist');
+};
+
+/** A reservation whose snapshot expired stays pendente forever (the executor answers unavailable); it must not block. */
+const strandedOperationScenario = async (database: PrismaClient, owner: Team) => {
+  const runtime = createSemogSigningRuntime({ enabled: true, client: database });
+  const envelope = await createEnvelope(database, owner, new Date('2098-01-01T00:00:00Z'));
+  const { envelopeId } = envelope;
+  const [stranded, armed] = [envelope.recipients[1].recipient.id, envelope.recipients[4].recipient.id];
+  const snapshot = (recipientId: number, expiry: string) =>
+    sql(`INSERT INTO semog_bridge.snapshots (id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+      VALUES (gen_random_uuid(),${owner.team.id},${literal(envelopeId)},${recipientId},${literal('a'.repeat(64))},${literal('a'.repeat(64))},${literal('a'.repeat(64))},${expiry},'{}'::jsonb)`);
+  await snapshot(armed, "now()+interval '1 day'");
+  await snapshot(stranded, "clock_timestamp()+interval '1 second'");
+  await sql(`INSERT INTO semog_bridge.operations ("chaveOperacao","snapshotId","teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",acao,"hashPedido",pedido,evidencias)
+    SELECT gen_random_uuid(),id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",'assinar',${literal('a'.repeat(64))},'{}'::jsonb,'{}'::jsonb
+    FROM semog_bridge.snapshots WHERE "envelopeId"=${literal(envelopeId)} AND "recipientId"=${stranded}`);
+  const motivo = 'Prazo vencido com reserva órfã.';
+  const live = await refusalCode(() =>
+    runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao: randomUUID(), motivo }),
+  );
+  check(live === 'operacao-em-andamento', `pending operation with a live snapshot refuses (${live})`);
+  await sleep(1500);
+  // Discriminator: the first version of the check counted every pendente operation and would refuse forever.
+  const oldQuery = await sql(
+    `SELECT EXISTS (SELECT 1 FROM semog_bridge.operations WHERE "envelopeId"=${literal(envelopeId)} AND estado='pendente')`,
+  );
+  check(oldQuery.trim() === 't', 'the old check still sees the stranded operation as in flight');
+  const result = await runtime.cancel.create(owner.actor, envelopeId, { chaveOperacao: randomUUID(), motivo });
+  const final = await database.envelope.findUniqueOrThrow({ where: { id: envelopeId } });
+  check(
+    result.situacao === 'cancelado' && final.status === 'CANCELLED' && result.revogados === 2,
+    `expired snapshot under a pending operation does not block; both snapshots revoked (${result.revogados})`,
+  );
+  check((await liveSnapshots(envelopeId)) === 0, 'no live snapshot left after the cancellation');
+};
+
 const refusalDetail = async (fn: () => Promise<unknown>) => {
   try {
     await fn();
@@ -1039,6 +1414,9 @@ try {
   await contactGuardScenario(client, owner);
   await contactScenario(client, owner, services);
   await closedContactScenario(client, owner, services);
+  await cancelGuardScenario(client, owner);
+  await cancelScenario(client, owner, services);
+  await strandedOperationScenario(client, owner);
 } finally {
   process.chdir(workspace);
   await client?.$disconnect();
