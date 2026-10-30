@@ -4,7 +4,7 @@ import { createSemogApiTokenAuthenticator } from '@documenso/lib/server-only/sem
 import { createSemogDocumentI18n } from '@documenso/lib/server-only/semog-signing/document-pages';
 import { createSemogHost } from '@documenso/lib/server-only/semog-signing/host';
 import { createSemogHostRateLimit } from '@documenso/lib/server-only/semog-signing/host-rate-limit';
-import { createSemogS3PdfStore } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
+import { createSemogS3PdfStore, semogS3SettingsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
 import { env } from '@documenso/lib/utils/env';
 import { getTranslations } from '@documenso/lib/utils/i18n';
 import { logger } from '@documenso/lib/utils/logger';
@@ -31,22 +31,8 @@ export const semogHostRateLimit = createSemogHostRateLimit({
  * addresses; with any other transport they stay inline (BYTES_64), the behaviour before object storage.
  */
 const semogPdfStore = () => {
-  if (env('NEXT_PUBLIC_UPLOAD_TRANSPORT') !== 's3') {
-    return undefined;
-  }
-  const bucket = env('NEXT_PRIVATE_UPLOAD_BUCKET');
-  if (!bucket) {
-    throw new Error('Semog object storage requires NEXT_PRIVATE_UPLOAD_BUCKET.');
-  }
-  const accessKeyId = env('NEXT_PRIVATE_UPLOAD_ACCESS_KEY_ID');
-  const secretAccessKey = env('NEXT_PRIVATE_UPLOAD_SECRET_ACCESS_KEY');
-  return createSemogS3PdfStore({
-    bucket,
-    endpoint: env('NEXT_PRIVATE_UPLOAD_ENDPOINT') || undefined,
-    region: env('NEXT_PRIVATE_UPLOAD_REGION') || undefined,
-    forcePathStyle: env('NEXT_PRIVATE_UPLOAD_FORCE_PATH_STYLE') === 'true',
-    credentials: accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey } : undefined,
-  });
+  const settings = semogS3SettingsFromEnv(env);
+  return settings && createSemogS3PdfStore(settings);
 };
 /** No development certificate fallback, implicit outbound delivery, or worker without opt-in. */
 const initializeHost = async () => {

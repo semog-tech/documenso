@@ -55,6 +55,14 @@ Com `NEXT_PUBLIC_UPLOAD_TRANSPORT=s3`, o host injeta `pdfStore` (mesmo bucket e 
     AND (proname LIKE 'storage%' OR proname IN ('semog_pdf_key','migrate_document_data_to_s3'));
   ```
 
+- **Liberação de espaço (`db/2026-11-01-semog-storage-liberacao.sql`, depois do par acima):**
+  - **Migração ampliada:** além de COMPLETED/REJECTED, entram CANCELLED (com ou sem recibo da ponte) e PENDING **sem nenhuma inscrição não revogada de destinatário NOT_SIGNED**, sem operação pendente e sem selagem na fila. O motivo da condição: a snapshot guarda o SHA-256 da *string* `initialData`, não dos bytes; migrar um PENDING com inscrição viva faria a assinatura dela ser recusada. A função de migração trava a linha do Envelope antes de decidir.
+  - **Guarda do cancelado:** o cancelamento revoga as inscrições, e a guarda antiga deixava de proteger a DocumentData. Agora a linha de envelope CANCELLED da ponte (item ou selo parcial) recusa UPDATE e DELETE, exceto a migração por token. A linha nunca é apagada nem esvaziada, nem pela purga.
+  - **Purga do R2:** só o objeto sai; `semog_bridge.storage_purges` guarda para sempre chave, SHA-256, envelopes, motivo, retenção, quem e quando (tabela só de acréscimo, escrita só pelas funções, com token). Candidata: chave cuja TODA DocumentData que a referencia (`data` ou `initialData`, inclusive órfãs) é item de envelope CANCELLED da ponte cancelado há mais que a retenção. Selo parcial, selado, outro envelope ou órfã seguram o objeto. Ordem: registra a intenção (`pendente`) → confere a carência sobre `LastModified` → lê e confere o hash → apaga → se apareceu referência nova, regrava os mesmos bytes e desiste; senão conclui (`purgada`). Queda no meio deixa só `pendente`, retomado na próxima execução.
+  - **Varredura diária** `internal.semog-storage-purge-sweep` (06:00 UTC), ativa com `SEMOG_SIGNING_ENABLED=true`, transporte s3 e a migração aplicada; `SEMOG_STORAGE_PURGE_ENABLED=false` desliga. `SEMOG_CANCELLED_RETENTION_DAYS` (90) e `SEMOG_STORAGE_PURGE_GRACE_HOURS` (24). Antes de purgar, migra para o R2 o PDF ainda inline de cancelado.
+  - **Sob demanda:** `scripts/semog-signing-storage-purge.ts` (simulação por padrão). Sem argumentos, faz o que a varredura faria; `--envelope <id> --agora --motivo "<texto>" [--carencia-horas 0] --aplicar` purga já um envelope CANCELLED, ignorando a retenção só para ele.
+  - **Volta:** o `.down` restaura guarda e elegibilidade de 2026-10-31; objetos purgados não voltam, e o registro, se tiver linhas, fica.
+
 ## Rascunho em binário (multipart)
 
 `POST /api/semog/v1/envelopes-rascunho` aceita dois formatos, com as mesmas respostas, erros e idempotência (o hash da operação é o mesmo para o mesmo PDF e metadados nos dois):

@@ -9,6 +9,7 @@
   "include": [
     "packages/lib/server-only/semog-signing/**/*.ts",
     "scripts/semog-signing-*.ts",
+    "packages/lib/jobs/definitions/internal/semog-*.ts",
     "apps/remix/server/semog-signing-host.ts",
     "apps/remix/server/semog-signing-routes.ts"
   ],

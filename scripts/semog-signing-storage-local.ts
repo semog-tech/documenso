@@ -20,11 +20,12 @@ import type { SemogPdfStore } from '../packages/lib/server-only/semog-signing/pd
 import { putSemogStoredPdf } from '../packages/lib/server-only/semog-signing/pdf-store';
 import { createSemogS3PdfStore } from '../packages/lib/server-only/semog-signing/pdf-store-s3';
 import { createSemogSigningRuntime } from '../packages/lib/server-only/semog-signing/runtime';
+import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
 import {
   backupSemogStorageRows,
   migrateSemogStorageRow,
   planSemogStorageMigration,
-} from './semog-signing-storage-migration';
+} from '../packages/lib/server-only/semog-signing/storage-migration';
 
 const id = randomUUID();
 const containers = { db: `semog-storage-db-${id}`, s3: `semog-storage-s3-${id}` };
@@ -183,6 +184,10 @@ const applySchema = async () => {
   await migration('storage', 'down');
   await migration('storage');
   await migration('storage');
+  // The widening on top of it: its rollback on an empty ledger, then forward twice.
+  await migration('storage-liberacao', 'down');
+  await migration('storage-liberacao');
+  await migration('storage-liberacao');
 };
 const STORAGE_FUNCTIONS = [
   'semog_pdf_key(text)',
@@ -571,7 +576,7 @@ try {
   const pendingRow = byId.get(pendingItem.documentDataId);
   await rejects(
     () => migrateSemogStorageRow(database, store, pendingRow ?? plan[0]),
-    /not a finished/,
+    /not eligible/,
     'migrou envelope pendente',
   );
   const eligible = plan.filter((row) => row.eligible);
@@ -605,8 +610,28 @@ try {
     'restou linha elegível após migrar',
   );
 
+  // 5. db/2026-11-01-semog-storage-liberacao: PENDING/CANCELLED migration, cancelled guard, purge, CLI, sweep, ACL.
+  let envelopeNumber = 9100;
+  await checkSemogStorageLiberacaoLocal({
+    client: database,
+    actor,
+    databaseUrl,
+    settings,
+    store,
+    sql,
+    migration,
+    createEnvelope: (document) => createEnvelope(database, actor, envelopeNumber++, document),
+    signAndSeal: (fixture, seal) => signAndSeal(objects, actor, fixture, seal),
+    pdf: async (label) => {
+      const labelled = await PDFDocument.create();
+      labelled.setTitle(label);
+      labelled.addPage([600, 800]);
+      return await labelled.save();
+    },
+  });
+
   process.stdout.write(
-    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, and inline -> S3 migration through the guard passed.\n',
+    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up) passed.\n',
   );
 } finally {
   await client?.$disconnect();
