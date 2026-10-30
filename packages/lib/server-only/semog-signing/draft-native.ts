@@ -5,13 +5,19 @@ import { ZSignatureFieldMeta, ZTextFieldMeta } from '../../types/field-meta';
 import { nanoid, prefixedId } from '../../universal/id';
 import { createDocumentAuditLogData } from '../../utils/document-audit-logs';
 import { mapDocumentIdToSecondaryId } from '../../utils/envelope';
-import type { SemogDraftRequest, SemogDraftResult } from './draft-contract';
+import type { SemogDraftInput, SemogDraftResult } from './draft-contract';
+import type { SemogStoredPdf } from './pdf-store';
 import type { SemogActor } from './service';
 
-const createDocument = async (tx: Prisma.TransactionClient, actor: SemogActor, input: SemogDraftRequest) => {
+const createDocument = async (
+  tx: Prisma.TransactionClient,
+  actor: SemogActor,
+  input: SemogDraftInput,
+  document: SemogStoredPdf,
+) => {
   const counter = await tx.counter.update({ where: { id: 'document' }, data: { value: { increment: 1 } } });
   const data = await tx.documentData.create({
-    data: { type: 'BYTES_64', data: input.arquivo.pdfBase64, initialData: input.arquivo.pdfBase64 },
+    data: { type: document.type, data: document.data, initialData: document.data },
   });
   return await tx.envelope.create({
     data: {
@@ -47,7 +53,7 @@ const createDocument = async (tx: Prisma.TransactionClient, actor: SemogActor, i
 const createRecipient = async (
   tx: Prisma.TransactionClient,
   ids: { envelopeId: string; itemId: string },
-  recipient: SemogDraftRequest['signatarios'][number],
+  recipient: SemogDraftInput['signatarios'][number],
 ) => {
   const created = await tx.recipient.create({
     data: {
@@ -96,9 +102,10 @@ const createRecipient = async (
 export const createSemogNativeDraft = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
-  input: SemogDraftRequest,
+  input: SemogDraftInput,
+  document: SemogStoredPdf,
 ): Promise<SemogDraftResult> => {
-  const envelope = await createDocument(tx, actor, input);
+  const envelope = await createDocument(tx, actor, input, document);
   const ids = { envelopeId: envelope.id, itemId: envelope.envelopeItems[0].id };
   const signatarios: SemogDraftResult['signatarios'] = [];
   for (const recipient of input.signatarios) {

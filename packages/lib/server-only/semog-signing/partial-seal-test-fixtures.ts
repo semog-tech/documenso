@@ -264,7 +264,18 @@ export const createSemogPartialSealStore = (envelope: FixtureEnvelope, options: 
       update: allowed('envelope.update', native.envelopeUpdates),
       updateMany: forbiddenMutation('envelope.updateMany'),
     },
-    envelopeItem: { update: allowed('envelopeItem.update', native.itemUpdates) },
+    envelopeItem: {
+      update: allowed('envelopeItem.update', native.itemUpdates),
+      // The pre-transaction read of the originals (prereadSemogOriginals).
+      findMany: vi.fn(
+        async ({ where }: { where: { envelopeId: string; envelope: { teamId: number; status: string } } }) =>
+          where.envelopeId === envelope.id &&
+          where.envelope.teamId === envelope.teamId &&
+          where.envelope.status === envelope.status
+            ? envelope.envelopeItems.map(({ documentData }) => ({ documentData }))
+            : [],
+      ),
+    },
     recipient: { update: forbiddenMutation('recipient.update'), updateMany: forbiddenMutation('recipient.updateMany') },
     field: { update: forbiddenMutation('field.update') },
     documentAuditLog: {

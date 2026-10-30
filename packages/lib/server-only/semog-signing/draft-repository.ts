@@ -1,12 +1,12 @@
 import { Prisma } from '@prisma/client';
 import { AppErrorCode } from '../../errors/app-error';
-import type { SemogDraftRequest, SemogDraftResult } from './draft-contract';
+import type { SemogDraftInput, SemogDraftResult } from './draft-contract';
 import { ZSemogDraftResult } from './draft-contract';
 import { hashSemogDraftStructure, readSemogDraftStructure } from './draft-structure';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
-export const lockSemogDraft = async (tx: Prisma.TransactionClient, actor: SemogActor, input: SemogDraftRequest) => {
+export const lockSemogDraft = async (tx: Prisma.TransactionClient, actor: SemogActor, input: SemogDraftInput) => {
   // READ COMMITTED + transaction advisory locks: waiter reads the receipt committed by the winner.
   const externalLock = `semog-draft-external:${actor.teamId}:${input.externalId}`;
   const operationLock = `semog-draft-operation:${input.operacaoId}`;
@@ -16,7 +16,7 @@ export const lockSemogDraft = async (tx: Prisma.TransactionClient, actor: SemogA
 export const replaySemogDraft = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
-  input: SemogDraftRequest,
+  input: SemogDraftInput,
   hash: string,
 ) => {
   const rows = await tx.$queryRaw<{ teamId: number; userId: number; hash: string; resultado: unknown }[]>(Prisma.sql`
@@ -43,7 +43,7 @@ export const replaySemogDraft = async (
 export const saveSemogDraftReceipt = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
-  input: SemogDraftRequest,
+  input: SemogDraftInput,
   hash: string,
   result: SemogDraftResult,
 ) => {

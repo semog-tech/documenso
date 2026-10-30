@@ -12,6 +12,8 @@ import {
   ZSemogManifestation,
 } from './service-validation';
 import { buildSemogSnapshot, canonicalSemogJson } from './snapshot';
+import type { SemogStageObserver } from './timing';
+import { timeSemogStage } from './timing';
 import { validateSemogVisualSignature } from './visual';
 
 export type SemogActor = { teamId: number; userId: number };
@@ -29,13 +31,16 @@ export type SemogSigningRepositoryPort = Pick<
   ReturnType<typeof createSemogSigningRepository>,
   'registerSnapshot' | 'getSnapshot' | 'getOperation' | 'reserveOperation'
 >;
+export type SemogCurrentDocument = { envelope: unknown; pdf: Uint8Array };
 export type SemogSigningDependencies = {
   enabled?: boolean;
   repository: SemogSigningRepositoryPort;
   authenticate?: (token: string) => Promise<SemogActor | null>;
-  readCurrent: (input: { envelopeId: string; actor: SemogActor }) => Promise<{ envelope: unknown; pdf: Uint8Array }>;
+  readCurrent: (input: { envelopeId: string; actor: SemogActor }) => Promise<SemogCurrentDocument>;
+  observe?: SemogStageObserver;
   executor?: {
-    execute: (actor: SemogActor, key: string) => Promise<SemogExecutionResult>;
+    /** `prefetched` hands over the bytes this request already read, so the PDF is read only once. */
+    execute: (actor: SemogActor, key: string, prefetched?: SemogCurrentDocument) => Promise<SemogExecutionResult>;
     get: (actor: SemogActor, key: string) => Promise<SemogExecutionResult>;
     pdf?: (actor: SemogActor, key: string) => Promise<Uint8Array>;
   };
@@ -90,18 +95,72 @@ const checkCurrentSnapshot = async (
   ) {
     throw semogError(AppErrorCode.INVALID_REQUEST, 409);
   }
-  const current = await dependencies.readCurrent({ envelopeId: input.envelopeId, actor });
-  const rebuilt = buildSemogSnapshot({
-    ...current,
-    teamId: actor.teamId,
-    recipientId: input.recipientId,
-    consentimento: snapshot.conteudo.consentimento,
-    expiraEm: snapshot.expiraEm,
+  const consentimento = snapshot.conteudo.consentimento;
+  const current = await timeSemogStage(
+    dependencies.observe,
+    'reserve.read',
+    () => dependencies.readCurrent({ envelopeId: input.envelopeId, actor }),
+    (value) => ({ bytes: value.pdf.byteLength }),
+  );
+  await timeSemogStage(dependencies.observe, 'reserve.snapshot', () => {
+    const rebuilt = buildSemogSnapshot({
+      ...current,
+      teamId: actor.teamId,
+      recipientId: input.recipientId,
+      consentimento,
+      expiraEm: snapshot.expiraEm,
+    });
+    if (rebuilt.hashSnapshot !== snapshot.hashSnapshot || rebuilt.envelopeId !== input.envelopeId) {
+      throw semogError(AppErrorCode.INVALID_REQUEST, 409);
+    }
+    validateSemogFieldValues(current.envelope, input);
   });
-  if (rebuilt.hashSnapshot !== snapshot.hashSnapshot || rebuilt.envelopeId !== input.envelopeId) {
-    throw semogError(AppErrorCode.INVALID_REQUEST, 409);
+  return current;
+};
+
+// A replayed key carries no bytes: the executor reads the PDF itself, once, before its transaction.
+const reserve = async (dependencies: SemogSigningDependencies, actor: SemogActor, body: unknown) => {
+  const input = ZSemogManifestation.parse(body);
+  await validateSemogVisualSignature(input);
+  const hashPedido = hashSemogManifestation(input);
+  const existing = await dependencies.repository.getOperation({
+    teamId: actor.teamId,
+    chaveOperacao: input.chaveOperacao,
+  });
+  if (existing) {
+    if (existing.teamId !== actor.teamId || existing.hashPedido !== hashPedido) {
+      throw semogError(AppErrorCode.INVALID_REQUEST, 409);
+    }
+    return dependencies.executor ? dependencies.executor.execute(actor, input.chaveOperacao) : pendingResult(existing);
   }
-  validateSemogFieldValues(current.envelope, input);
+  const snapshot = await dependencies.repository.getSnapshot({
+    teamId: actor.teamId,
+    envelopeId: input.envelopeId,
+    recipientId: input.recipientId,
+  });
+  if (!snapshot) {
+    throw semogError(AppErrorCode.NOT_FOUND, 404);
+  }
+  const current = await checkCurrentSnapshot(
+    dependencies,
+    actor,
+    { ...snapshot, conteudo: jsonObject(snapshot.conteudo) },
+    input,
+  );
+  const operation = await dependencies.repository.reserveOperation({
+    ...input,
+    teamId: actor.teamId,
+    snapshotId: snapshot.id,
+    hashPedido,
+    pedido: jsonObject(input),
+    evidencias: jsonObject({
+      ...input.evidencias,
+      metodoAutenticacao: semogAuthenticationMethod(input.evidencias),
+    }),
+  });
+  return dependencies.executor
+    ? dependencies.executor.execute(actor, input.chaveOperacao, current)
+    : pendingResult(operation);
 };
 
 /** Defaults to reservation only; an explicitly injected executor applies the native transaction. */
@@ -136,42 +195,7 @@ export const createSemogSigningService = (dependencies: SemogSigningDependencies
   },
   reserve: async (actor: SemogActor, body: unknown) => {
     requireEnabled(dependencies);
-    const input = ZSemogManifestation.parse(body);
-    await validateSemogVisualSignature(input);
-    const hashPedido = hashSemogManifestation(input);
-    const existing = await dependencies.repository.getOperation({
-      teamId: actor.teamId,
-      chaveOperacao: input.chaveOperacao,
-    });
-    if (existing) {
-      if (existing.teamId !== actor.teamId || existing.hashPedido !== hashPedido) {
-        throw semogError(AppErrorCode.INVALID_REQUEST, 409);
-      }
-      return dependencies.executor
-        ? dependencies.executor.execute(actor, input.chaveOperacao)
-        : pendingResult(existing);
-    }
-    const snapshot = await dependencies.repository.getSnapshot({
-      teamId: actor.teamId,
-      envelopeId: input.envelopeId,
-      recipientId: input.recipientId,
-    });
-    if (!snapshot) {
-      throw semogError(AppErrorCode.NOT_FOUND, 404);
-    }
-    await checkCurrentSnapshot(dependencies, actor, { ...snapshot, conteudo: jsonObject(snapshot.conteudo) }, input);
-    const operation = await dependencies.repository.reserveOperation({
-      ...input,
-      teamId: actor.teamId,
-      snapshotId: snapshot.id,
-      hashPedido,
-      pedido: jsonObject(input),
-      evidencias: jsonObject({
-        ...input.evidencias,
-        metodoAutenticacao: semogAuthenticationMethod(input.evidencias),
-      }),
-    });
-    return dependencies.executor ? dependencies.executor.execute(actor, input.chaveOperacao) : pendingResult(operation);
+    return await timeSemogStage(dependencies.observe, 'manifestation', () => reserve(dependencies, actor, body));
   },
   get: async (actor: SemogActor, key: string) => {
     requireEnabled(dependencies);

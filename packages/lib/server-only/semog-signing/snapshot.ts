@@ -5,8 +5,8 @@ import { AUTO_SIGNABLE_FIELD_TYPES } from '../../constants/autosign';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { ZFieldMetaNotOptionalSchema, ZSignatureFieldMeta, ZTextFieldMeta } from '../../types/field-meta';
 import { fromCheckboxValue, toCheckboxValue } from '../../universal/field-checkbox';
-import type { SemogEnvelopeSnapshotSource, SemogJson, SemogJsonObject, SemogSnapshot } from './contract';
-import { ZSemogEnvelopeSnapshotSource } from './contract';
+import type { SemogEnvelopeStructureSource, SemogJson, SemogJsonObject, SemogSnapshot } from './contract';
+import { ZSemogEnvelopeSnapshotSource, ZSemogEnvelopeStructureSource } from './contract';
 
 const sha256 = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const invalid = () =>
@@ -52,7 +52,7 @@ function canonicalObject(value: object, ancestors: WeakSet<object>, depth: numbe
   return output;
 }
 
-function validateLinks(envelope: SemogEnvelopeSnapshotSource) {
+function validateLinks(envelope: SemogEnvelopeStructureSource) {
   const recipients = new Set(envelope.recipients.map((item) => item.id));
   const fields = new Set(envelope.fields.map((item) => item.id));
   const item = envelope.envelopeItems[0];
@@ -71,7 +71,7 @@ function validateLinks(envelope: SemogEnvelopeSnapshotSource) {
   }
 }
 
-function validateRecipient(envelope: SemogEnvelopeSnapshotSource, recipientId: number, expiry: number) {
+function validateRecipient(envelope: SemogEnvelopeStructureSource, recipientId: number, expiry: number) {
   const recipient = envelope.recipients.find((item) => item.id === recipientId);
   if (
     !recipient ||
@@ -87,7 +87,7 @@ function validateRecipient(envelope: SemogEnvelopeSnapshotSource, recipientId: n
   validateOrder(envelope, recipient.signingOrder);
 }
 
-function validateOrder(envelope: SemogEnvelopeSnapshotSource, ownOrder: number | null) {
+function validateOrder(envelope: SemogEnvelopeStructureSource, ownOrder: number | null) {
   if (envelope.documentMeta.signingOrder === 'SEQUENTIAL') {
     const ordered = envelope.recipients.filter((item) => item.role !== 'CC');
     const orders = new Set(ordered.map((item) => item.signingOrder));
@@ -108,7 +108,7 @@ function validateOrder(envelope: SemogEnvelopeSnapshotSource, ownOrder: number |
   }
 }
 
-function validateFields(envelope: SemogEnvelopeSnapshotSource, recipientId: number) {
+function validateFields(envelope: SemogEnvelopeStructureSource, recipientId: number) {
   const own = envelope.fields.filter((item) => item.recipientId === recipientId);
   if (!own.some((item) => item.type === 'SIGNATURE')) {
     throw invalid();
@@ -133,7 +133,7 @@ function validateFields(envelope: SemogEnvelopeSnapshotSource, recipientId: numb
   }
 }
 
-function validateFieldMetadata(field: SemogEnvelopeSnapshotSource['fields'][number]) {
+function validateFieldMetadata(field: SemogEnvelopeStructureSource['fields'][number]) {
   if (field.fieldMeta === null) {
     return;
   }
@@ -149,8 +149,9 @@ function validateFieldMetadata(field: SemogEnvelopeSnapshotSource['fields'][numb
 }
 
 function snapshotContent(
-  envelope: SemogEnvelopeSnapshotSource,
+  envelope: SemogEnvelopeStructureSource,
   recipientId: number,
+  hashInitialData: string,
   bindings: SemogJsonObject,
 ): SemogJsonObject {
   const recipients = [...envelope.recipients]
@@ -167,7 +168,7 @@ function snapshotContent(
     useLegacyFieldInsertion: envelope.useLegacyFieldInsertion,
     authOptions: envelope.authOptions,
     documentMeta: envelope.documentMeta,
-    item: snapshotItem(envelope.envelopeItems[0]),
+    item: snapshotItem(envelope.envelopeItems[0], hashInitialData),
     recipients,
     fields: [...envelope.fields]
       .sort((a, b) => a.id - b.id)
@@ -182,7 +183,7 @@ function snapshotContent(
 }
 
 const isParallelSignerProgress = (
-  envelope: SemogEnvelopeSnapshotSource,
+  envelope: SemogEnvelopeStructureSource,
   fieldRecipientId: number,
   ownRecipientId: number,
 ) =>
@@ -191,7 +192,7 @@ const isParallelSignerProgress = (
   envelope.recipients.some((recipient) => recipient.id === fieldRecipientId && recipient.role === 'SIGNER');
 
 const snapshotRecipient = (
-  recipient: SemogEnvelopeSnapshotSource['recipients'][number],
+  recipient: SemogEnvelopeStructureSource['recipients'][number],
   hasIndependentProgress: boolean,
 ) => {
   const { token, signingStatus, signedAt, ...structural } = recipient;
@@ -199,7 +200,7 @@ const snapshotRecipient = (
   return hasIndependentProgress ? stable : { ...stable, signingStatus, signedAt };
 };
 
-const preservesPrefilledValue = (field: SemogEnvelopeSnapshotSource['fields'][number]) => {
+const preservesPrefilledValue = (field: SemogEnvelopeStructureSource['fields'][number]) => {
   if (field.type === 'EMAIL') {
     return true;
   }
@@ -214,8 +215,8 @@ const preservesPrefilledValue = (field: SemogEnvelopeSnapshotSource['fields'][nu
 };
 
 const expectedPrefilledValue = (
-  field: SemogEnvelopeSnapshotSource['fields'][number],
-  envelope: SemogEnvelopeSnapshotSource,
+  field: SemogEnvelopeStructureSource['fields'][number],
+  envelope: SemogEnvelopeStructureSource,
 ): string | undefined => {
   if (field.type === 'EMAIL') {
     return envelope.recipients.find((recipient) => recipient.id === field.recipientId)?.email;
@@ -243,8 +244,8 @@ const expectedPrefilledValue = (
 // Native signing updates inserted/customText. Freeze metadata, not writable default input.
 // Readonly values normalize to the native validator's authorized value representation.
 const snapshotField = (
-  field: SemogEnvelopeSnapshotSource['fields'][number],
-  envelope: SemogEnvelopeSnapshotSource,
+  field: SemogEnvelopeStructureSource['fields'][number],
+  envelope: SemogEnvelopeStructureSource,
   hasIndependentProgress: boolean,
 ) => {
   if (!hasIndependentProgress) {
@@ -262,57 +263,82 @@ const snapshotField = (
   return { ...structural, customText: expected ?? customText };
 };
 
-function snapshotItem(item: SemogEnvelopeSnapshotSource['envelopeItems'][number]) {
+function snapshotItem(item: SemogEnvelopeStructureSource['envelopeItems'][number], hashInitialData: string) {
   return {
     id: item.id,
     envelopeId: item.envelopeId,
     title: item.title,
     order: item.order,
     documentDataId: item.documentDataId,
-    hashInitialData: sha256(item.documentData.initialData),
+    hashInitialData,
   };
 }
+
+/** Digests of the INITIAL_DATA reference (S3 key or inline Base64) and of the PDF bytes it resolves to. */
+export type SemogDocumentHashes = { hashInitialData: string; hashDocumento: string };
+export const hashSemogDocument = (pdf: Uint8Array, initialData: string): SemogDocumentHashes => {
+  if (!(pdf instanceof Uint8Array) || new TextDecoder().decode(pdf.subarray(0, 5)) !== '%PDF-') {
+    throw invalid();
+  }
+  return { hashInitialData: sha256(initialData), hashDocumento: sha256(pdf) };
+};
 
 type SnapshotInput = {
   teamId: number;
   envelope: unknown;
-  pdf: Uint8Array;
   consentimento: string;
   recipientId: number;
   expiraEm: string;
+} & (
+  | { pdf: Uint8Array }
+  // Only for a caller that already hashed the exact bytes and proved the INITIAL_DATA digest belongs to them.
+  | { documento: SemogDocumentHashes }
+);
+
+const readDocument = (input: SnapshotInput) => {
+  if ('documento' in input) {
+    const parsed = ZSemogEnvelopeStructureSource.safeParse(input.envelope);
+    return parsed.success ? { envelope: parsed.data, hashes: input.documento } : null;
+  }
+  const parsed = ZSemogEnvelopeSnapshotSource.safeParse(input.envelope);
+  if (!parsed.success) {
+    return null;
+  }
+  return {
+    envelope: parsed.data,
+    hashes: hashSemogDocument(input.pdf, parsed.data.envelopeItems[0].documentData.initialData),
+  };
 };
 
 function validateInput(input: SnapshotInput) {
-  const parsed = ZSemogEnvelopeSnapshotSource.safeParse(input.envelope);
+  const document = readDocument(input);
   const expiry = Date.parse(input.expiraEm);
   if (
-    !parsed.success ||
-    parsed.data.teamId !== input.teamId ||
+    document === null ||
+    document.envelope.teamId !== input.teamId ||
     !Number.isSafeInteger(input.recipientId) ||
     !Number.isFinite(expiry) ||
     expiry <= Date.now() ||
     !z.string().datetime({ offset: true }).safeParse(input.expiraEm).success ||
     typeof input.consentimento !== 'string' ||
     input.consentimento.trim().length === 0 ||
-    input.consentimento.length > 20_000 ||
-    !(input.pdf instanceof Uint8Array) ||
-    new TextDecoder().decode(input.pdf.subarray(0, 5)) !== '%PDF-'
+    input.consentimento.length > 20_000
   ) {
     throw invalid();
   }
-  return { envelope: parsed.data, expiry };
+  return { ...document, expiry };
 }
 
 /** Pure snapshot construction; callers must read envelope and INITIAL_DATA bytes on the trusted server. */
 export function buildSemogSnapshot(input: SnapshotInput): SemogSnapshot {
-  const { envelope, expiry } = validateInput(input);
+  const { envelope, hashes, expiry } = validateInput(input);
   validateLinks(envelope);
   validateRecipient(envelope, input.recipientId, expiry);
   validateFields(envelope, input.recipientId);
   const expiraEm = new Date(expiry).toISOString();
-  const hashDocumento = sha256(input.pdf);
+  const { hashDocumento, hashInitialData } = hashes;
   const hashConsentimento = sha256(input.consentimento);
-  const conteudo = snapshotContent(envelope, input.recipientId, {
+  const conteudo = snapshotContent(envelope, input.recipientId, hashInitialData, {
     hashDocumento,
     hashConsentimento,
     expiraEm,
