@@ -8,11 +8,11 @@ import {
 } from '../../types/document-audit-logs';
 import { semogAuthenticationMethod } from './auth-evidence';
 import type { SemogEnvelopeSnapshotSource } from './contract';
-import type { readSemogNativeEnvelope } from './native-envelope';
+import type { readSemogNativeEnvelopeStructure } from './native-envelope';
 import type { SemogManifestation } from './service-validation';
 import { semogVisualDataUrl } from './visual';
 
-type NativeEnvelope = Awaited<ReturnType<typeof readSemogNativeEnvelope>>['envelope'];
+type NativeEnvelope = Awaited<ReturnType<typeof readSemogNativeEnvelopeStructure>>['envelope'];
 type Recipient = SemogEnvelopeSnapshotSource['recipients'][number];
 const recipientData = (recipient: Recipient) => ({
   recipientId: recipient.id,

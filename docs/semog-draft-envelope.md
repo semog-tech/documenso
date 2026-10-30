@@ -25,3 +25,5 @@ pnpm dlx node@24 node_modules/vite-node/vite-node.mjs --config packages/lib/vite
 ```
 
 O último comando inicia e remove PostgreSQL 16 descartável em loopback, gera apenas SQL pelo `prisma migrate diff`, aplica pares locais e testa Prisma real/HTTP/API token, concorrência, replay, conflito, isolamento, rollback injetado, ausência de distribuição/outbox e PDF válido maior que 15 MiB. Não requer `.env`, não regenera client, não instala dependências e não envia documentos a terceiros.
+
+Corpo binário (multipart) e armazenamento do PDF no bucket: ver `docs/semog-signing-bridge.md`, seções "Rascunho em binário" e "Armazenamento do PDF".

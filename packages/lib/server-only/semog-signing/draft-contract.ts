@@ -44,35 +44,38 @@ const recipient = z
       ctx.addIssue({ code: 'custom', message: 'Campos incompatíveis com o papel do destinatário.' });
     }
   });
-export const ZSemogDraftRequest = z
-  .object({
-    operacaoId: identifier,
-    externalId: identifier,
-    versao: z.number().int().positive().safe(),
-    ordemAssinatura: z.enum(['paralela', 'sequencial']),
-    titulo: z.string().trim().min(1).max(500),
-    arquivo: z
-      .object({
-        nome: z.string().trim().min(1).max(254),
-        pdfBase64: z.string().min(1),
-        sha256: z.string().regex(/^[a-f0-9]{64}$/),
-      })
-      .strict(),
-    signatarios: z.array(recipient).min(1).max(100),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    const recipients = value.signatarios.map((item) => item.referencia);
-    const fields = value.signatarios.flatMap((item) => item.campos.map((entry) => entry.referencia));
-    if (
-      new Set(recipients).size !== recipients.length ||
-      new Set(fields).size !== fields.length ||
-      fields.length > 1000 ||
-      (value.ordemAssinatura === 'paralela' && value.signatarios.some((item) => item.role === 'ASSISTANT'))
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'Referências duplicadas ou excesso de campos.' });
-    }
-  });
+const draftRequest = <T extends z.ZodTypeAny>(arquivo: T) =>
+  z
+    .object({
+      operacaoId: identifier,
+      externalId: identifier,
+      versao: z.number().int().positive().safe(),
+      ordemAssinatura: z.enum(['paralela', 'sequencial']),
+      titulo: z.string().trim().min(1).max(500),
+      arquivo,
+      signatarios: z.array(recipient).min(1).max(100),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      const recipients = value.signatarios.map((item) => item.referencia);
+      const fields = value.signatarios.flatMap((item) => item.campos.map((entry) => entry.referencia));
+      if (
+        new Set(recipients).size !== recipients.length ||
+        new Set(fields).size !== fields.length ||
+        fields.length > 1000 ||
+        (value.ordemAssinatura === 'paralela' && value.signatarios.some((item) => item.role === 'ASSISTANT'))
+      ) {
+        ctx.addIssue({ code: 'custom', message: 'Referências duplicadas ou excesso de campos.' });
+      }
+    });
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const nome = z.string().trim().min(1).max(254);
+/** Legacy JSON body: the PDF travels as canonical Base64 inside `arquivo`. */
+export const ZSemogDraftRequest = draftRequest(z.object({ nome, pdfBase64: z.string().min(1), sha256 }).strict());
+/** `metadados` part of the multipart body: the PDF travels as the separate `arquivo` part, raw bytes. */
+export const ZSemogDraftMetadata = draftRequest(
+  z.object({ nome, sha256, tamanho: z.number().int().positive().safe() }).strict(),
+);
 export const ZSemogDraftResult = z
   .object({
     operacaoId: identifier,
@@ -91,6 +94,8 @@ export const ZSemogDraftResult = z
   })
   .strict();
 export type SemogDraftRequest = z.infer<typeof ZSemogDraftRequest>;
+/** What both body formats become once the PDF is verified: the bytes are bound by hash and size, not carried. */
+export type SemogDraftInput = z.infer<typeof ZSemogDraftMetadata>;
 export type SemogDraftResult = z.infer<typeof ZSemogDraftResult>;
 export const SEMOG_DRAFT_MAX_PDF_BYTES = 100 * 1024 * 1024;
 export const semogDraftBodyLimit = (maximum: number) => 4 * Math.ceil(maximum / 3) + 512 * 1024;

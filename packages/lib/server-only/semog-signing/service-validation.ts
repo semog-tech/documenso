@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { ZTextFieldMeta } from '../../types/field-meta';
-import { ZSemogEnvelopeSnapshotSource } from './contract';
+import { ZSemogEnvelopeStructureSource } from './contract';
 import { canonicalSemogJson } from './snapshot';
 
 const identifier = z
@@ -76,7 +76,7 @@ export const validateSemogFieldValues = (source: unknown, input: SemogManifestat
   if (input.acao === 'recusar') {
     return;
   }
-  const envelope = ZSemogEnvelopeSnapshotSource.parse(source);
+  const envelope = ZSemogEnvelopeStructureSource.parse(source);
   const own = envelope.fields.filter((field) => field.recipientId === input.recipientId);
   if (input.assinaturaVisual) {
     const visual = input.assinaturaVisual;
@@ -114,7 +114,7 @@ export const validateSemogFieldValues = (source: unknown, input: SemogManifestat
 };
 
 const validateRequiredValues = (
-  fields: z.infer<typeof ZSemogEnvelopeSnapshotSource>['fields'],
+  fields: z.infer<typeof ZSemogEnvelopeStructureSource>['fields'],
   input: SemogManifestation,
 ) => {
   for (const field of fields) {

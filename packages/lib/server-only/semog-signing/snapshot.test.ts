@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildSemogSnapshot, canonicalSemogJson } from './snapshot';
+import { serviceFixture } from './service-test-fixtures';
+import { buildSemogSnapshot, canonicalSemogJson, hashSemogDocument } from './snapshot';
 
 const optionalOrder = (): number | null => null;
 const fixture = () => ({
@@ -531,5 +532,55 @@ describe('buildSemogSnapshot', () => {
     expect(() => buildSemogSnapshot(input)).toThrow();
     input.envelope.recipients[1].signingStatus = 'SIGNED';
     expect(() => buildSemogSnapshot(input)).not.toThrow();
+  });
+});
+
+// Hashes produced by the ORIGINAL snapshot builder (origin/leandrosemog/documenso-2.18, 913bc634) for these inputs,
+// computed once against that code. Snapshots enrolled in production were hashed by it: if a change here breaks
+// these literals, every enrolled snapshot stops validating. Fix the change, never the literals.
+describe('compatibilidade com snapshots já inscritos', () => {
+  const golden = () => {
+    const f = serviceFixture();
+    const paralelo = {
+      ...f.envelope,
+      recipients: [
+        ...f.envelope.recipients,
+        {
+          ...f.envelope.recipients[0],
+          id: 11,
+          token: 'outro',
+          signingStatus: 'SIGNED',
+          signedAt: '2026-10-06T12:00:00.000Z',
+        },
+      ],
+      fields: [
+        ...f.envelope.fields,
+        { ...f.envelope.fields[1], id: 31, recipientId: 11, inserted: true, customText: 'Parecer' },
+      ],
+    };
+    return { f, cases: [f.envelope, paralelo] };
+  };
+  const expected = [
+    '90bcb1e3f806bb4097a44a94d5cafb13d606baef3eac3abf4c402c93a06d81e9',
+    '542d93973a84487fd5197e96e0983e5614254a7f693b3679b853e26d7287ffe1',
+  ];
+  it('o builder atual reproduz o hash do builder original, a partir dos bytes', () => {
+    const { f, cases } = golden();
+    const hashes = cases.map((envelope) => buildSemogSnapshot({ ...f.enrollment, envelope, pdf: f.pdf, teamId: 1 }));
+    expect(hashes.map((snapshot) => snapshot.hashSnapshot)).toEqual(expected);
+    expect(hashes[0].hashDocumento).toBe('eddc31937fbdaf708e866af0d20b9fb8c79dd001881c8a11e4c617f2882e779f');
+  });
+  it('e também a partir dos hashes já calculados, como faz a transação de assinatura', () => {
+    const { f, cases } = golden();
+    const documento = hashSemogDocument(f.pdf, f.envelope.envelopeItems[0].documentData.initialData);
+    const structure = cases.map((envelope) => ({
+      ...envelope,
+      envelopeItems: envelope.envelopeItems.map(({ documentData, ...item }) => ({
+        ...item,
+        documentData: { id: documentData.id },
+      })),
+    }));
+    const hashes = structure.map((envelope) => buildSemogSnapshot({ ...f.enrollment, envelope, documento, teamId: 1 }));
+    expect(hashes.map((snapshot) => snapshot.hashSnapshot)).toEqual(expected);
   });
 });

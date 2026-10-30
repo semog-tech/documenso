@@ -10,13 +10,20 @@ import { insertFieldInPDFV2 } from '../pdf/insert-field-in-pdf-v2';
 import type { SemogDocumentI18n } from './document-pages';
 import { renderSemogDocumentPages } from './document-pages';
 import type { SemogPrismaTransactionRunner } from './execution';
+import type { SemogExternalEffects } from './execution-effects';
+import { resolveSemogExternalEffects, semogEffectState } from './execution-effects';
+import { readSemogOutside } from './execution-observed';
 import type { SemogPdfReader } from './initial-pdf';
+import type { SemogPdfStore } from './pdf-store';
+import { persistSemogDerivedPdf, recordSemogWrites } from './pdf-store';
 import type { SemogActor } from './service';
 
 type Dependencies = {
   enabled?: boolean;
   client: SemogPrismaTransactionRunner;
   readPdf: SemogPdfReader;
+  pdfStore?: SemogPdfStore;
+  externalEffects?: SemogExternalEffects;
   signer?: Signer;
   rejectionFont?: Uint8Array;
   getDocumentI18n?: SemogDocumentI18n;
@@ -164,6 +171,43 @@ export const readSemogSealingEnvelope = async (tx: Prisma.TransactionClient, act
   });
 };
 export type SemogSealingEnvelope = Awaited<ReturnType<typeof readSemogSealingEnvelope>>;
+/** Original PDFs read before a seal transaction, keyed by DocumentData id, with the INITIAL_DATA they came from. */
+export type SemogPrereadOriginals = Map<string, { initialData: string; bytes: Uint8Array }>;
+/** No lock and no object read inside the seal transaction: the originals come from here, read just before it. */
+export const prereadSemogOriginals = async (
+  client: SemogPrismaTransactionRunner,
+  readPdf: SemogPdfReader,
+  actor: SemogActor,
+  envelopeId: string,
+): Promise<SemogPrereadOriginals> => {
+  const items = await readSemogOutside(client, (tx) =>
+    tx.envelopeItem.findMany({
+      where: { envelopeId, envelope: { teamId: actor.teamId, status: 'PENDING' } },
+      select: { documentData: { select: { id: true, type: true, initialData: true } } },
+    }),
+  );
+  const originals: SemogPrereadOriginals = new Map();
+  for (const { documentData } of items) {
+    const bytes = await readPdf({
+      documentDataId: documentData.id,
+      type: documentData.type,
+      data: documentData.initialData,
+    });
+    originals.set(documentData.id, { initialData: documentData.initialData, bytes });
+  }
+  return originals;
+};
+/** The locked row must still name the very INITIAL_DATA read before; otherwise the effect is retried later. */
+export const takeSemogOriginal = (
+  originals: SemogPrereadOriginals,
+  documentData: { id: string; initialData: string },
+) => {
+  const original = originals.get(documentData.id);
+  if (!original || original.initialData !== documentData.initialData) {
+    throw denied();
+  }
+  return original.bytes;
+};
 type NativeEnvelope = SemogSealingEnvelope;
 const assertSealable = (dependencies: Dependencies, envelope: NativeEnvelope) => {
   const rejected = envelope.recipients.some((recipient) => recipient.signingStatus === 'REJECTED');
@@ -190,12 +234,9 @@ const createItemPdf = async (
   rejected: boolean,
   i18n: I18n,
   item: NativeEnvelope['envelopeItems'][number],
+  originals: SemogPrereadOriginals,
 ) => {
-  const pdf = await dependencies.readPdf({
-    documentDataId: item.documentData.id,
-    type: item.documentData.type,
-    data: item.documentData.initialData,
-  });
+  const pdf = takeSemogOriginal(originals, item.documentData);
   const original = await PDF.load(pdf);
   const lastPage = original.getPage(original.getPageCount() - 1);
   if (!lastPage) {
@@ -221,15 +262,15 @@ const persistSealedItems = async (
   signer: Signer,
   rejected: boolean,
   i18n: I18n,
+  originals: SemogPrereadOriginals,
 ) => {
   for (const item of envelope.envelopeItems) {
-    const signed = await createItemPdf(tx, dependencies, envelope, signer, rejected, i18n, item);
+    const signed = await createItemPdf(tx, dependencies, envelope, signer, rejected, i18n, item, originals);
+    // An object-stored original gets an object-stored seal (written here, before commit, under its content
+    // address); the original stays referenced by its own key, never copied. Inline originals keep inline seals.
+    const stored = await persistSemogDerivedPdf(dependencies.pdfStore, item.documentData.type, signed);
     const data = await tx.documentData.create({
-      data: {
-        type: 'BYTES_64',
-        data: Buffer.from(signed).toString('base64'),
-        initialData: item.documentData.initialData,
-      },
+      data: { type: stored.type, data: stored.data, initialData: item.documentData.initialData },
     });
     await tx.envelopeItem.update({ where: { id: item.id }, data: { documentDataId: data.id } });
     const receipt = { documentDataId: data.id, hashPdf: createHash('sha256').update(signed).digest('hex') };
@@ -237,13 +278,19 @@ const persistSealedItems = async (
       WHERE "envelopeId"=${envelope.id} AND estado='concluida' AND execucao IS NOT NULL`);
   }
 };
-const finishSeal = async (tx: Prisma.TransactionClient, envelopeId: string, rejected: boolean) => {
+const finishSeal = async (
+  tx: Prisma.TransactionClient,
+  envelopeId: string,
+  rejected: boolean,
+  externalEffects: SemogExternalEffects | undefined,
+) => {
   await tx.envelope.update({
     where: { id: envelopeId },
     data: { status: rejected ? 'REJECTED' : 'COMPLETED', completedAt: new Date() },
   });
-  await tx.$executeRaw(Prisma.sql`INSERT INTO semog_bridge.outbox(id,"chaveOperacao","envelopeId",kind,payload)
-    SELECT ${`${envelopeId}-document-completed`},"chaveOperacao",${envelopeId},'webhook',${JSON.stringify({ event: rejected ? 'DOCUMENT_REJECTED' : 'DOCUMENT_COMPLETED', envelopeId })}::jsonb
+  const external = await resolveSemogExternalEffects(tx, externalEffects);
+  await tx.$executeRaw(Prisma.sql`INSERT INTO semog_bridge.outbox(id,"chaveOperacao","envelopeId",kind,payload,estado)
+    SELECT ${`${envelopeId}-document-completed`},"chaveOperacao",${envelopeId},'webhook',${JSON.stringify({ event: rejected ? 'DOCUMENT_REJECTED' : 'DOCUMENT_COMPLETED', envelopeId })}::jsonb,${semogEffectState('webhook', external)}
     FROM semog_bridge.outbox WHERE "envelopeId"=${envelopeId} AND kind='seal' ON CONFLICT(id) DO NOTHING`);
   return { envelopeId, documentoConcluido: !rejected };
 };
@@ -253,6 +300,7 @@ const sealLocked = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
   envelopeId: string,
+  originals: SemogPrereadOriginals,
 ) => {
   const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId);
   if (envelope.status === 'COMPLETED' || envelope.status === 'REJECTED') {
@@ -275,8 +323,8 @@ const sealLocked = async (
   });
   // The real completion audit belongs to this transaction. Rendering/signing failure rolls it back.
   await tx.documentAuditLog.create({ data: { envelopeId, ...event } });
-  await persistSealedItems(tx, dependencies, envelope, signer, rejected, i18n);
-  return await finishSeal(tx, envelopeId, rejected);
+  await persistSealedItems(tx, dependencies, envelope, signer, rejected, i18n, originals);
+  return await finishSeal(tx, envelopeId, rejected, dependencies.externalEffects);
 };
 export const createSemogPrismaSealer = (dependencies: Dependencies) => ({
   seal: async (actor: SemogActor, envelopeId: string) => {
@@ -284,10 +332,18 @@ export const createSemogPrismaSealer = (dependencies: Dependencies) => ({
       throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
     }
     const signer = dependencies.signer;
-    return await dependencies.client.$transaction((tx) => sealLocked(dependencies, signer, tx, actor, envelopeId), {
-      isolationLevel: 'Serializable',
-      timeout: 60000,
-      maxWait: 10000,
-    });
+    const originals = await prereadSemogOriginals(dependencies.client, dependencies.readPdf, actor, envelopeId);
+    const writes = recordSemogWrites(dependencies.pdfStore);
+    const result = await dependencies.client.$transaction(
+      (tx) => sealLocked({ ...dependencies, pdfStore: writes.store }, signer, tx, actor, envelopeId, originals),
+      {
+        isolationLevel: 'Serializable',
+        timeout: 60000,
+        maxWait: 10000,
+      },
+    );
+    // After the commit, outside any transaction: the sealed objects are read back and proven by content.
+    await writes.confirm();
+    return result;
   },
 });
