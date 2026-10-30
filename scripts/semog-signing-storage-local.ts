@@ -27,6 +27,7 @@ import {
 } from '../packages/lib/server-only/semog-signing/storage-migration';
 import { checkSemogExpiredPendingMigration } from './semog-signing-storage-expired-checks';
 import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
+import { checkSemogEnrollmentRace } from './semog-signing-storage-race-checks';
 
 const id = randomUUID();
 const containers = { db: `semog-storage-db-${id}`, s3: `semog-storage-s3-${id}` };
@@ -631,7 +632,24 @@ try {
     signAndSeal: (fixture, seal) => signAndSeal(objects, actor, fixture, seal),
     pdf: labelledPdf,
   });
-  // 6. Expired enrollment: migrate PENDING, partial seal, extension, new enrollment, signature, final seal.
+  // 6. Enrollment racing the migration: the stale snapshot is refused; the service reads again once.
+  await checkSemogEnrollmentRace({
+    client: database,
+    actor,
+    store,
+    sql,
+    createInline: async (bytes) => {
+      const fixture = await createEnvelope(database, actor, envelopeNumber++, {
+        type: 'BYTES_64',
+        data: Buffer.from(bytes).toString('base64'),
+      });
+      await sql(`INSERT INTO semog_bridge.draft_receipts("operacaoId","externalId","teamId","userId",hash,"envelopeId",resultado)
+        VALUES(gen_random_uuid(),gen_random_uuid(),${actor.teamId},${actor.userId},repeat('a',64),'${fixture.envelopeId}','{}')`);
+      return fixture;
+    },
+    pdf: labelledPdf,
+  });
+  // 7. Expired enrollment: migrate PENDING, partial seal, extension, new enrollment, signature, final seal.
   await checkSemogExpiredPendingMigration({
     client: database,
     actor,
@@ -650,7 +668,7 @@ try {
   });
 
   process.stdout.write(
-    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up) and the expired-enrollment round (migrate, partial seal, extension, re-enroll, sign, seal) passed.\n',
+    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up), the enrollment race (stale snapshot refused, service reads again) and the expired-enrollment round (migrate, partial seal, extension, re-enroll, sign, seal) passed.\n',
   );
 } finally {
   await client?.$disconnect();

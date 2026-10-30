@@ -13,6 +13,8 @@
 --     inscrição ativa faria a assinatura dela ser recusada. Inscrição vencida não assina mais; a prorrogação a revoga
 --     e a nova inscrição é reconstruída do initialData atual (a chave). A função de migração trava a linha do
 --     Envelope antes de decidir, a mesma trava que inscrição, execução, selagem e cancelamento tomam.
+-- Inscrição: semog_signing_register_snapshot confere, sob a trava do Envelope, que a snapshot amarra o initialData
+-- atual do item; senão recusa com SQLSTATE 40001 e o serviço relê e tenta uma vez.
 -- Guarda: a linha de DocumentData de envelope da ponte CANCELLED (item ou selo parcial) não aceita UPDATE nem
 -- DELETE, exceto a transformação exata da migração por token. Nenhum outro ramo muda; a busca do envelope por
 -- snapshot viva passa a olhar o id antigo e o novo (troca de id cascateia para EnvelopeItem depois do BEFORE).
@@ -68,6 +70,40 @@ BEGIN
   DELETE FROM semog_bridge.storage_migration_tokens WHERE token=issued;
   PERFORM set_config('semog_bridge.storage_migration','',true);
   RETURN jsonb_build_object('id',p_id,'envelopeId',env,'data',data_key,'initialData',initial_key);
+END $$;
+
+-- Inscrição: a mesma função de 2026-10-06-semog-signing (grants mantidos pelo CREATE OR REPLACE), com uma conferência
+-- a mais sob a trava do Envelope: o hashInitialData da snapshot tem de ser o do initialData ATUAL do item. Fecha a
+-- corrida entre a leitura que montou a snapshot e a migração; a recusa (40001) faz o serviço reler e tentar uma vez.
+CREATE OR REPLACE FUNCTION public.semog_signing_register_snapshot(p_snapshot jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, semog_bridge AS $$
+DECLARE s semog_bridge.snapshots; old semog_bridge.snapshots;
+BEGIN
+  s := jsonb_populate_record(NULL::semog_bridge.snapshots, p_snapshot);
+  PERFORM 1 FROM public."Envelope" e WHERE e.id = s."envelopeId" AND e."teamId" = s."teamId" FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target unavailable'; END IF;
+  PERFORM 1 FROM public."Recipient" r WHERE r.id = s."recipientId" AND r."envelopeId" = s."envelopeId" FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target unavailable'; END IF;
+  -- Under the Envelope lock the storage migration also takes: the snapshot must bind the INITIAL_DATA the item
+  -- holds NOW. Built from a read that a migration overtook (Base64 -> key), it would never validate again.
+  IF NOT EXISTS(SELECT 1 FROM public."EnvelopeItem" i JOIN public."DocumentData" d ON d.id=i."documentDataId"
+      WHERE i."envelopeId"=s."envelopeId" AND d.id=s.conteudo->'item'->>'documentDataId'
+        AND encode(sha256(convert_to(d."initialData",'UTF8')),'hex')=s.conteudo->'item'->>'hashInitialData') THEN
+    RAISE EXCEPTION 'semog snapshot document changed' USING ERRCODE='40001';
+  END IF;
+  SELECT * INTO old FROM semog_bridge.snapshots WHERE "envelopeId" = s."envelopeId" AND "recipientId" = s."recipientId" AND "revogadaEm" IS NULL;
+  IF FOUND THEN
+    IF old."teamId" IS DISTINCT FROM s."teamId" OR old."hashSnapshot" IS DISTINCT FROM s."hashSnapshot" OR old."hashDocumento" IS DISTINCT FROM s."hashDocumento"
+      OR old."hashConsentimento" IS DISTINCT FROM s."hashConsentimento" OR old.conteudo IS DISTINCT FROM s.conteudo OR old."expiraEm" IS DISTINCT FROM s."expiraEm" THEN
+      RAISE EXCEPTION 'snapshot conflict';
+    END IF;
+    RETURN to_jsonb(old) - 'revogadaEm' - 'criadaEm';
+  END IF;
+  IF s."expiraEm" <= clock_timestamp() OR s."expiraEm" IS NULL THEN RAISE EXCEPTION 'snapshot expired'; END IF;
+  INSERT INTO semog_bridge.snapshots(id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+  VALUES(s.id,s."teamId",s."envelopeId",s."recipientId",s."hashDocumento",s."hashConsentimento",s."hashSnapshot",s."expiraEm",s.conteudo)
+  RETURNING * INTO s;
+  RETURN to_jsonb(s) - 'revogadaEm' - 'criadaEm';
 END $$;
 
 -- Registro permanente: o que foi purgado, de quais envelopes, por quê, com que base de retenção e por quem. Hash,

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createSemogSigningPostgresClient,
   createSemogSigningRepository,
+  SEMOG_STALE_SNAPSHOT,
   type SemogSigningSnapshot,
 } from './repository';
 
@@ -27,6 +28,20 @@ describe('signing persistence boundary', () => {
       message: 'Signing persistence conflict',
       statusCode: 409,
     });
+  });
+  it('maps a stale snapshot (40001 from register, raw pg or Prisma P2010) to its own retryable conflict', async () => {
+    for (const error of [
+      { code: '40001', message: 'semog snapshot document changed' },
+      { code: 'P2010', meta: { code: '40001', message: 'semog snapshot document changed' } },
+    ]) {
+      const query = vi.fn().mockRejectedValue(error);
+      const repository = createSemogSigningRepository(createSemogSigningPostgresClient({ query }));
+      await expect(repository.registerSnapshot(snapshot)).rejects.toMatchObject({
+        code: 'INVALID_REQUEST',
+        message: SEMOG_STALE_SNAPSHOT,
+        statusCode: 409,
+      });
+    }
   });
   it('keeps privilege errors as unavailable rather than pretending a conflict', async () => {
     const query = vi.fn().mockRejectedValue({ code: '42501', detail: 'private table privileges' });

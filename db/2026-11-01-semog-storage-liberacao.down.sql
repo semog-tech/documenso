@@ -5,6 +5,30 @@
 -- objetos já purgados continuam apagados. O registro de purgas é permanente: a tabela storage_purges só é removida
 -- se estiver vazia; com registros, fica (sem funções que escrevam nela) e um NOTICE avisa.
 BEGIN;
+-- Inscrição de volta exatamente como em 2026-10-06-semog-signing (sem a conferência do initialData).
+CREATE OR REPLACE FUNCTION public.semog_signing_register_snapshot(p_snapshot jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, semog_bridge AS $$
+DECLARE s semog_bridge.snapshots; old semog_bridge.snapshots;
+BEGIN
+  s := jsonb_populate_record(NULL::semog_bridge.snapshots, p_snapshot);
+  PERFORM 1 FROM public."Envelope" e WHERE e.id = s."envelopeId" AND e."teamId" = s."teamId" FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target unavailable'; END IF;
+  PERFORM 1 FROM public."Recipient" r WHERE r.id = s."recipientId" AND r."envelopeId" = s."envelopeId" FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'target unavailable'; END IF;
+  SELECT * INTO old FROM semog_bridge.snapshots WHERE "envelopeId" = s."envelopeId" AND "recipientId" = s."recipientId" AND "revogadaEm" IS NULL;
+  IF FOUND THEN
+    IF old."teamId" IS DISTINCT FROM s."teamId" OR old."hashSnapshot" IS DISTINCT FROM s."hashSnapshot" OR old."hashDocumento" IS DISTINCT FROM s."hashDocumento"
+      OR old."hashConsentimento" IS DISTINCT FROM s."hashConsentimento" OR old.conteudo IS DISTINCT FROM s.conteudo OR old."expiraEm" IS DISTINCT FROM s."expiraEm" THEN
+      RAISE EXCEPTION 'snapshot conflict';
+    END IF;
+    RETURN to_jsonb(old) - 'revogadaEm' - 'criadaEm';
+  END IF;
+  IF s."expiraEm" <= clock_timestamp() OR s."expiraEm" IS NULL THEN RAISE EXCEPTION 'snapshot expired'; END IF;
+  INSERT INTO semog_bridge.snapshots(id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento","hashSnapshot","expiraEm",conteudo)
+  VALUES(s.id,s."teamId",s."envelopeId",s."recipientId",s."hashDocumento",s."hashConsentimento",s."hashSnapshot",s."expiraEm",s.conteudo)
+  RETURNING * INTO s;
+  RETURN to_jsonb(s) - 'revogadaEm' - 'criadaEm';
+END $$;
 DROP FUNCTION IF EXISTS semog_bridge.storage_purge_begin(text,integer,text,text,text);
 DROP FUNCTION IF EXISTS semog_bridge.storage_purge_finish(uuid,boolean);
 DROP FUNCTION IF EXISTS semog_bridge.storage_purge_abandon(uuid,text);

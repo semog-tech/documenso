@@ -70,6 +70,20 @@ const buildStatements = (params: Record<string, unknown>): Record<string, { text
   },
 });
 
+/**
+ * register_snapshot refuses with SQLSTATE 40001 when INITIAL_DATA changed between the read the snapshot was built
+ * from and its lock (e.g. the storage migration moved the PDF to R2): the caller reads again and retries once.
+ */
+export const SEMOG_STALE_SNAPSHOT = 'Signing snapshot document changed';
+const sqlState = (error: unknown) => {
+  if (typeof error !== 'object' || error === null) {
+    return undefined;
+  }
+  // Raw pg errors carry the SQLSTATE in `code`; Prisma raw-query failures (P2010) carry it in `meta.code`.
+  const meta = 'meta' in error && typeof error.meta === 'object' && error.meta !== null ? error.meta : null;
+  const nested = meta && 'code' in meta ? meta.code : undefined;
+  return 'code' in error && error.code === 'P2010' ? nested : 'code' in error ? error.code : undefined;
+};
 // This is a PostgreSQL function adapter, not a PostgREST endpoint. Identifiers are allowlisted.
 const executeStatement = async (client: SemogSigningSqlClient, statement: { text: string; values: unknown[] }) => {
   try {
@@ -77,6 +91,9 @@ const executeStatement = async (client: SemogSigningSqlClient, statement: { text
   } catch (error) {
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
       throw new AppError('INVALID_REQUEST', { message: 'Signing persistence conflict', statusCode: 409 });
+    }
+    if (sqlState(error) === '40001') {
+      throw new AppError('INVALID_REQUEST', { message: SEMOG_STALE_SNAPSHOT, statusCode: 409 });
     }
     throw error;
   }
