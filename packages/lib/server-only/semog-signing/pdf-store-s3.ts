@@ -106,6 +106,7 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
   };
   return {
     read: (key) => read(key, AbortSignal.timeout(timeouts.operationMs)),
+    exists: (key) => exists(key, AbortSignal.timeout(timeouts.operationMs)),
     write: async (key, bytes) => {
       const expected = semogPdfKeyHash(key);
       if (expected === null || sha256(bytes).digest('hex') !== expected) {

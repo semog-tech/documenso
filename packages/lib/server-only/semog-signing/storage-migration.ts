@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 
 import { createSemogPdfReader } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
-import { putSemogStoredPdf, semogPdfKeyFor } from './pdf-store';
+import { ensureSemogStoredPdf, putSemogStoredPdf, semogPdfKeyFor } from './pdf-store';
 
 /**
  * Inline (BYTES_64) -> object storage (S3_PATH) for the bridge's PDFs, one row at a time, through
@@ -108,14 +108,18 @@ const uploadVerified = async (store: SemogPdfStore, base64: string, expectedKey:
   }
   // Uploads and reads the object back, proving it by content before the row may point at it.
   await putSemogStoredPdf(store, bytes);
+  return bytes;
 };
 export const migrateSemogStorageRow = async (client: SqlClient, store: SemogPdfStore, row: SemogStoragePlanRow) => {
   const inline = await readInline(client, row.id);
-  await uploadVerified(store, inline.data, row.dataKey);
-  await uploadVerified(store, inline.initialData, row.initialKey);
+  const data = await uploadVerified(store, inline.data, row.dataKey);
+  const initial = await uploadVerified(store, inline.initialData, row.initialKey);
   const result = await client.$queryRaw<{ result: unknown }[]>(
     Prisma.sql`SELECT semog_bridge.migrate_document_data_to_s3(${row.id},${row.dataKey},${row.initialKey}) result`,
   );
+  // Committed: an object the purge removed since the upload is put back from the bytes still in memory.
+  await ensureSemogStoredPdf(store, row.dataKey, data);
+  await ensureSemogStoredPdf(store, row.initialKey, initial);
   return result[0]?.result;
 };
 /**

@@ -25,6 +25,7 @@ import {
   migrateSemogStorageRow,
   planSemogStorageMigration,
 } from '../packages/lib/server-only/semog-signing/storage-migration';
+import { checkSemogDraftPurgeRace } from './semog-signing-storage-draft-race-checks';
 import { checkSemogExpiredPendingMigration } from './semog-signing-storage-expired-checks';
 import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
 import { checkSemogEnrollmentRace } from './semog-signing-storage-race-checks';
@@ -649,7 +650,16 @@ try {
     },
     pdf: labelledPdf,
   });
-  // 7. Expired enrollment: migrate PENDING, partial seal, extension, new enrollment, signature, final seal.
+  // 7. A draft reusing a cancelled envelope's object while the purge removes it: put back after the commit.
+  await checkSemogDraftPurgeRace({
+    client: database,
+    actor,
+    settings,
+    sql,
+    createEnvelope: (document) => createEnvelope(database, actor, envelopeNumber++, document),
+    pdf: labelledPdf,
+  });
+  // 8. Expired enrollment: migrate PENDING, partial seal, extension, new enrollment, signature, final seal.
   await checkSemogExpiredPendingMigration({
     client: database,
     actor,
@@ -668,7 +678,7 @@ try {
   });
 
   process.stdout.write(
-    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up), the enrollment race (stale snapshot refused, service reads again) and the expired-enrollment round (migrate, partial seal, extension, re-enroll, sign, seal) passed.\n',
+    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up), the enrollment race (stale snapshot refused, service reads again), the draft/purge race and the expired-enrollment round (migrate, partial seal, extension, re-enroll, sign, seal) passed.\n',
   );
 } finally {
   await client?.$disconnect();
