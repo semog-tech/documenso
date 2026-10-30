@@ -78,7 +78,7 @@ export const persistSemogDerivedPdf = async (
  * between the upload and the commit (a draft that reuses an existing object skips the PUT, so its LastModified stays
  * old). Missing — or, without HEAD, not matching — means rewrite from the bytes still in memory and prove it.
  */
-export const ensureSemogStoredPdf = async (store: SemogPdfStore, key: string, bytes: Uint8Array) => {
+const ensureOnce = async (store: SemogPdfStore, key: string, bytes: Uint8Array) => {
   const present = store.exists
     ? await store.exists(key)
     : await readSemogStoredPdf(store, key).then(
@@ -88,6 +88,32 @@ export const ensureSemogStoredPdf = async (store: SemogPdfStore, key: string, by
   if (!present) {
     await store.write(key, bytes);
     await readSemogStoredPdf(store, key);
+  }
+};
+/** The row is committed but its object could not be confirmed: repeating the request (same key) ensures it again. */
+export const SEMOG_STORAGE_ENSURE_FAILED = 'SEMOG_STORAGE_ENSURE_FAILED';
+/**
+ * The check is idempotent, so any failure (timeout, ECONNRESET) is retried — 3 attempts, short linear backoff —
+ * before the caller gets an error of its own code. A draft replay with the same operacaoId runs this again.
+ */
+export const ensureSemogStoredPdf = async (
+  store: SemogPdfStore,
+  key: string,
+  bytes: Uint8Array,
+  { attempts = 3, backoffMs = 250 }: { attempts?: number; backoffMs?: number } = {},
+) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await ensureOnce(store, key, bytes);
+    } catch (error) {
+      if (attempt >= attempts) {
+        throw new AppError(SEMOG_STORAGE_ENSURE_FAILED, {
+          statusCode: 503,
+          message: `PDF ${key} não confirmado no armazenamento depois do commit: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
+    }
   }
 };
 

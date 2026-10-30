@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSemogDraftService } from './draft-service';
 import { createSemogPdfReader } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
-import { ensureSemogStoredPdf, persistSemogDerivedPdf, readSemogStoredPdf, semogPdfKeyFor } from './pdf-store';
+import {
+  ensureSemogStoredPdf,
+  persistSemogDerivedPdf,
+  readSemogStoredPdf,
+  SEMOG_STORAGE_ENSURE_FAILED,
+  semogPdfKeyFor,
+} from './pdf-store';
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const memoryStore = () => {
@@ -145,6 +151,21 @@ describe('Reconferência depois do commit', () => {
     await ensureSemogStoredPdf({ ...store, exists }, key, bytes);
     expect(objects.get(key)).toBe(bytes);
     expect(store.read).toHaveBeenCalledTimes(1);
+  });
+  it('falha de rede no HEAD é repetida com espera curta; depois de 3 tentativas, erro com código próprio', async () => {
+    const { objects, store } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    objects.set(key, bytes);
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const flaky = vi.fn<(candidate: string) => Promise<boolean>>().mockRejectedValueOnce(reset).mockResolvedValue(true);
+    await ensureSemogStoredPdf({ ...store, exists: flaky }, key, bytes, { backoffMs: 0 });
+    expect(flaky).toHaveBeenCalledTimes(2);
+    const down = vi.fn<(candidate: string) => Promise<boolean>>().mockRejectedValue(reset);
+    await expect(ensureSemogStoredPdf({ ...store, exists: down }, key, bytes, { backoffMs: 0 })).rejects.toMatchObject({
+      code: SEMOG_STORAGE_ENSURE_FAILED,
+      statusCode: 503,
+    });
+    expect(down).toHaveBeenCalledTimes(3);
   });
   it('sem HEAD: lê e confere; ausente ou adulterado é regravado', async () => {
     const { objects, store } = memoryStore();
