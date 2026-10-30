@@ -25,6 +25,7 @@ import {
   migrateSemogStorageRow,
   planSemogStorageMigration,
 } from '../packages/lib/server-only/semog-signing/storage-migration';
+import { checkSemogExpiredPendingMigration } from './semog-signing-storage-expired-checks';
 import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
 
 const id = randomUUID();
@@ -612,6 +613,12 @@ try {
 
   // 5. db/2026-11-01-semog-storage-liberacao: PENDING/CANCELLED migration, cancelled guard, purge, CLI, sweep, ACL.
   let envelopeNumber = 9100;
+  const labelledPdf = async (label: string) => {
+    const labelled = await PDFDocument.create();
+    labelled.setTitle(label);
+    labelled.addPage([600, 800]);
+    return await labelled.save();
+  };
   await checkSemogStorageLiberacaoLocal({
     client: database,
     actor,
@@ -622,16 +629,28 @@ try {
     migration,
     createEnvelope: (document) => createEnvelope(database, actor, envelopeNumber++, document),
     signAndSeal: (fixture, seal) => signAndSeal(objects, actor, fixture, seal),
-    pdf: async (label) => {
-      const labelled = await PDFDocument.create();
-      labelled.setTitle(label);
-      labelled.addPage([600, 800]);
-      return await labelled.save();
+    pdf: labelledPdf,
+  });
+  // 6. Expired enrollment: migrate PENDING, partial seal, extension, new enrollment, signature, final seal.
+  await checkSemogExpiredPendingMigration({
+    client: database,
+    actor,
+    store,
+    sql,
+    runtimeFor: (pdfStore) => runtimeWith(pdfStore, 'suppress'),
+    inAppDirectory: async (render) => {
+      process.chdir(resolve(workspace, 'apps/remix'));
+      try {
+        return await render();
+      } finally {
+        process.chdir(workspace);
+      }
     },
+    pdf: labelledPdf,
   });
 
   process.stdout.write(
-    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up) passed.\n',
+    'Storage local: R2-like bucket end to end (sign, seal, native download), outbox suppression + backfill + final state, inline -> S3 migration through the guard, and the space release (PENDING/CANCELLED migration, cancelled guard, retention purge, CLI, sweep, ACL, down/up) and the expired-enrollment round (migrate, partial seal, extension, re-enroll, sign, seal) passed.\n',
   );
 } finally {
   await client?.$disconnect();

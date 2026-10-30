@@ -25,9 +25,24 @@ export type SemogStoragePlanRow = {
   ponte: boolean;
   eligible: boolean;
   motivo: string | null;
+  /** When the only obstacle is a live enrollment: the latest expiraEm among them, from which the row qualifies. */
+  elegivelEm: Date | null;
 };
-type PlanQueryRow = Omit<SemogStoragePlanRow, 'eligible' | 'motivo'> & { finished: boolean | null };
+type PlanQueryRow = Omit<SemogStoragePlanRow, 'eligible' | 'motivo' | 'elegivelEm'> & {
+  finished: boolean | null;
+  inscricaoAte: Date | null;
+  operacaoPendente: boolean;
+  seloNaFila: boolean;
+};
 
+const ENCERRAVEIS = ['COMPLETED', 'REJECTED', 'CANCELLED', 'PENDING'];
+/** Every obstacle the database function checks, named, so the dry run says why and until when. */
+const obstacles = (row: PlanQueryRow) => [
+  ...(ENCERRAVEIS.includes(row.status ?? '') ? [] : [`status ${row.status ?? '?'} fora da migração`]),
+  ...(row.inscricaoAte ? [`inscrição ativa de quem não assinou até ${row.inscricaoAte.toISOString()}`] : []),
+  ...(row.operacaoPendente ? ['assinatura em andamento'] : []),
+  ...(row.seloNaFila ? ['selagem na fila'] : []),
+];
 const reason = (row: PlanQueryRow) => {
   if (row.envelopeId === null) {
     return 'órfã sem vínculo comprovado com envelope da ponte';
@@ -35,8 +50,14 @@ const reason = (row: PlanQueryRow) => {
   if (!row.ponte) {
     return 'envelope fora da ponte';
   }
-  return row.finished === true ? null : `envelope ${row.status ?? '?'} com assinatura, selagem ou inscrição pendente`;
+  if (row.finished === true) {
+    return null;
+  }
+  const named = obstacles(row);
+  return `envelope ${row.status ?? '?'}: ${named.length > 0 ? named.join('; ') : 'não encerrado'}`;
 };
+const eligibleFrom = (row: PlanQueryRow) =>
+  row.finished !== true && row.inscricaoAte !== null && obstacles(row).length === 1 ? row.inscricaoAte : null;
 export const planSemogStorageMigration = async (client: SqlClient): Promise<SemogStoragePlanRow[]> => {
   const ready = await client.$queryRaw<{ ready: boolean }[]>(
     Prisma.sql`SELECT to_regprocedure('semog_bridge.migrate_document_data_to_s3(text,text,text)') IS NOT NULL ready`,
@@ -49,7 +70,13 @@ export const planSemogStorageMigration = async (client: SqlClient): Promise<Semo
       semog_bridge.semog_pdf_key(d.data) "dataKey", semog_bridge.semog_pdf_key(d."initialData") "initialKey",
       o.env "envelopeId", o.orfa, e.status::text status,
       COALESCE(semog_bridge.storage_is_bridge_envelope(o.env),false) ponte,
-      CASE WHEN o.env IS NULL THEN NULL ELSE semog_bridge.storage_migration_eligible(o.env) END finished
+      CASE WHEN o.env IS NULL THEN NULL ELSE semog_bridge.storage_migration_eligible(o.env) END finished,
+      (SELECT max(s."expiraEm") FROM semog_bridge.snapshots s JOIN public."Recipient" r ON r.id=s."recipientId"
+        WHERE s."envelopeId"=o.env AND s."revogadaEm" IS NULL AND s."expiraEm">clock_timestamp()
+          AND r."signingStatus"='NOT_SIGNED') "inscricaoAte",
+      EXISTS(SELECT 1 FROM semog_bridge.operations WHERE "envelopeId"=o.env AND estado='pendente') "operacaoPendente",
+      EXISTS(SELECT 1 FROM semog_bridge.outbox WHERE "envelopeId"=o.env AND kind='seal'
+        AND estado IN ('pendente','leased')) "seloNaFila"
     FROM public."DocumentData" d
     CROSS JOIN LATERAL (SELECT semog_bridge.storage_owner(d.id) direct) owner
     CROSS JOIN LATERAL (SELECT COALESCE(owner.direct, semog_bridge.storage_orphan_owner(d.id)) env,
@@ -58,8 +85,8 @@ export const planSemogStorageMigration = async (client: SqlClient): Promise<Semo
     WHERE d.type='BYTES_64' ORDER BY d.id`);
   return rows.map((row) => {
     const motivo = reason(row);
-    const { finished: _finished, ...plan } = row;
-    return { ...plan, eligible: motivo === null, motivo };
+    const { finished: _finished, inscricaoAte: _until, operacaoPendente: _operation, seloNaFila: _seal, ...plan } = row;
+    return { ...plan, eligible: motivo === null, motivo, elegivelEm: eligibleFrom(row) };
   });
 };
 

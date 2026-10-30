@@ -77,6 +77,36 @@ const cancel = (deps: SemogStorageLiberacaoDeps, envelopeId: string, daysAgo: nu
     }
     COMMIT;`);
 
+/** A PENDING envelope whose only obstacle is a seal waiting in the outbox (signature done, snapshot revoked). */
+const sealQueued = async (deps: SemogStorageLiberacaoDeps) => {
+  const fixture = await deps.createEnvelope(inline(await deps.pdf('pendente-selo-na-fila')));
+  await deps.signAndSeal(fixture, false);
+  await deps.sql(`WITH op AS (INSERT INTO semog_bridge.operations("chaveOperacao","snapshotId","teamId","envelopeId",
+      "recipientId","hashDocumento","hashConsentimento",acao,"hashPedido",pedido,evidencias,estado)
+    SELECT gen_random_uuid(),id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",'assinar',
+      repeat('b',64),'{}','{}','concluida' FROM semog_bridge.snapshots WHERE "envelopeId"='${fixture.envelopeId}'
+    RETURNING "chaveOperacao","envelopeId")
+    INSERT INTO semog_bridge.outbox(id,"chaveOperacao","envelopeId",kind,payload)
+      SELECT gen_random_uuid()::text,"chaveOperacao","envelopeId",'seal','{}' FROM op;
+    UPDATE semog_bridge.snapshots SET "revogadaEm"=clock_timestamp() WHERE "envelopeId"='${fixture.envelopeId}';`);
+  return fixture;
+};
+/**
+ * The documented command, for real: under vite-node an "am I main" check used to make it exit 0 with no output.
+ * A dry run against this database must print the plan, with the reason and the date for a busy PENDING envelope.
+ */
+const checkMigrationScriptRuns = async (deps: SemogStorageLiberacaoDeps, busyEnvelopeId: string) => {
+  const dry = await runScript(deps, 'scripts/semog-signing-storage-migration.ts', []);
+  assert(
+    dry.code === 0 &&
+      /Simulação: nada foi alterado/.test(dry.output) &&
+      new RegExp(`envelope=${busyEnvelopeId}  status=PENDING  fora: .*elegível a partir de 2099-01-01`).test(
+        dry.output,
+      ),
+    `script de migração em simulação não relatou o plano: ${JSON.stringify(dry.output.slice(0, 400))}`,
+  );
+};
+
 const checkPendingEligibility = async (deps: SemogStorageLiberacaoDeps) => {
   const bytes = await deps.pdf('pendente-quieto');
   const quiet = await deps.createEnvelope(inline(bytes));
@@ -91,18 +121,25 @@ const checkPendingEligibility = async (deps: SemogStorageLiberacaoDeps) => {
     SELECT gen_random_uuid(),id,"teamId","envelopeId","recipientId","hashDocumento","hashConsentimento",'assinar',
       repeat('b',64),'{}','{}' FROM semog_bridge.snapshots WHERE "envelopeId"='${reserved.envelopeId}';
     UPDATE semog_bridge.snapshots SET "revogadaEm"=clock_timestamp() WHERE "envelopeId"='${reserved.envelopeId}';`);
+  const queued = await sealQueued(deps);
   const plan = new Map((await planSemogStorageMigration(deps.client)).map((row) => [row.envelopeId, row]));
   const quietRow = plan.get(quiet.envelopeId);
   if (quietRow?.eligible !== true || quietRow.status !== 'PENDING') {
     throw new Error('PENDING quieto deveria ser elegível');
   }
-  for (const fixture of [busy, reserved]) {
+  for (const [fixture, motivo] of [
+    [busy, /inscrição ativa de quem não assinou até 2099-01-01T00:00:00\.000Z/],
+    [reserved, /assinatura em andamento/],
+    [queued, /selagem na fila/],
+  ] as const) {
     const row = plan.get(fixture.envelopeId);
-    if (row?.eligible !== false) {
-      throw new Error('PENDING com inscrição viva ou operação pendente não pode ser elegível');
+    if (row?.eligible !== false || !motivo.test(row.motivo ?? '')) {
+      throw new Error(`PENDING ocupado elegível ou sem motivo claro: ${row?.motivo ?? 'ausente'}`);
     }
     await rejects(() => migrateSemogStorageRow(deps.client, deps.store, row), /not eligible/, 'migrou PENDING ocupado');
   }
+  assert(plan.get(busy.envelopeId)?.elegivelEm?.toISOString() === '2099-01-01T00:00:00.000Z', 'data de elegibilidade');
+  await checkMigrationScriptRuns(deps, busy.envelopeId);
   await migrateSemogStorageRow(deps.client, deps.store, quietRow);
   const migrated = await itemData(deps, quiet.envelopeId);
   assert(migrated.type === 'S3_PATH' && migrated.data === keyOf(bytes), 'PENDING não foi para a chave do hash');
@@ -261,17 +298,11 @@ const checkResumeAndGrace = async (
   assert(await exists(purge.real, fresh.data), 'carência apagou o objeto');
 };
 
-const runCli = (deps: SemogStorageLiberacaoDeps, args: string[]) =>
+const runScript = (deps: SemogStorageLiberacaoDeps, script: string, args: string[]) =>
   new Promise<{ code: number | null; output: string }>((resolvePromise, reject) => {
     const child = spawn(
       process.execPath,
-      [
-        'node_modules/vite-node/vite-node.mjs',
-        '--config',
-        'packages/lib/vitest.config.ts',
-        'scripts/semog-signing-storage-purge.ts',
-        ...args,
-      ],
+      ['node_modules/vite-node/vite-node.mjs', '--config', 'packages/lib/vitest.config.ts', script, ...args],
       { env: { ...process.env, NEXT_PRIVATE_DATABASE_URL: deps.databaseUrl } },
     );
     let output = '';
@@ -284,6 +315,8 @@ const runCli = (deps: SemogStorageLiberacaoDeps, args: string[]) =>
     child.on('error', reject);
     child.on('close', (code) => resolvePromise({ code, output }));
   });
+const runCli = (deps: SemogStorageLiberacaoDeps, args: string[]) =>
+  runScript(deps, 'scripts/semog-signing-storage-purge.ts', args);
 const checkCli = async (deps: SemogStorageLiberacaoDeps, ata: Fixture, pending: Fixture) => {
   const real = createSemogS3PurgeObjects(deps.settings);
   const flags = ['--envelope', ata.envelopeId, '--agora', '--motivo', 'Ata de teste', '--carencia-horas', '0'];

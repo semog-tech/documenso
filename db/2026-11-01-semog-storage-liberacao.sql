@@ -7,11 +7,12 @@
 --
 -- Elegibilidade (storage_migration_eligible), sempre só para envelope da ponte, sem operação pendente e sem selagem
 -- na fila:
---   * COMPLETED/REJECTED: como antes (sem inscrição viva e não expirada de quem não assinou);
---   * CANCELLED e PENDING: nenhuma inscrição não revogada de destinatário NOT_SIGNED, expirada ou não. A snapshot
---     guarda o SHA-256 da STRING initialData (Base64 inline ou a chave), não dos bytes: migrar com uma inscrição viva
---     faria a assinatura dela ser recusada. A função de migração trava a linha do Envelope antes de decidir, a mesma
---     trava que inscrição, execução, selagem e cancelamento tomam.
+--   * COMPLETED/REJECTED (com completedAt), como antes, e agora também CANCELLED e PENDING;
+--   * em todos: nenhuma inscrição ATIVA de destinatário NOT_SIGNED — não revogada e com expiraEm no futuro. A
+--     snapshot guarda o SHA-256 da STRING initialData (Base64 inline ou a chave), não dos bytes: migrar com uma
+--     inscrição ativa faria a assinatura dela ser recusada. Inscrição vencida não assina mais; a prorrogação a revoga
+--     e a nova inscrição é reconstruída do initialData atual (a chave). A função de migração trava a linha do
+--     Envelope antes de decidir, a mesma trava que inscrição, execução, selagem e cancelamento tomam.
 -- Guarda: a linha de DocumentData de envelope da ponte CANCELLED (item ou selo parcial) não aceita UPDATE nem
 -- DELETE, exceto a transformação exata da migração por token. Nenhum outro ramo muda; a busca do envelope por
 -- snapshot viva passa a olhar o id antigo e o novo (troca de id cascateia para EnvelopeItem depois do BEFORE).
@@ -35,13 +36,10 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,semog_bridge AS 
   SELECT semog_bridge.storage_is_bridge_envelope(p_env)
     AND NOT EXISTS(SELECT 1 FROM semog_bridge.operations WHERE "envelopeId"=p_env AND estado='pendente')
     AND NOT EXISTS(SELECT 1 FROM semog_bridge.outbox WHERE "envelopeId"=p_env AND kind='seal' AND estado IN ('pendente','leased'))
-    AND EXISTS(SELECT 1 FROM public."Envelope" e WHERE e.id=p_env AND (
-      (e.status IN ('COMPLETED','REJECTED') AND e."completedAt" IS NOT NULL
-        AND NOT EXISTS(SELECT 1 FROM semog_bridge.snapshots s JOIN public."Recipient" r ON r.id=s."recipientId"
-          WHERE s."envelopeId"=p_env AND s."revogadaEm" IS NULL AND s."expiraEm">clock_timestamp() AND r."signingStatus"='NOT_SIGNED'))
-      OR (e.status IN ('CANCELLED','PENDING')
-        AND NOT EXISTS(SELECT 1 FROM semog_bridge.snapshots s JOIN public."Recipient" r ON r.id=s."recipientId"
-          WHERE s."envelopeId"=p_env AND s."revogadaEm" IS NULL AND r."signingStatus"='NOT_SIGNED'))));
+    AND EXISTS(SELECT 1 FROM public."Envelope" e WHERE e.id=p_env
+      AND ((e.status IN ('COMPLETED','REJECTED') AND e."completedAt" IS NOT NULL) OR e.status IN ('CANCELLED','PENDING')))
+    AND NOT EXISTS(SELECT 1 FROM semog_bridge.snapshots s JOIN public."Recipient" r ON r.id=s."recipientId"
+      WHERE s."envelopeId"=p_env AND s."revogadaEm" IS NULL AND s."expiraEm">clock_timestamp() AND r."signingStatus"='NOT_SIGNED');
 $$;
 -- Called by scripts/semog-signing-storage-migration.ts only after the object was uploaded AND read back with the
 -- same SHA-256. The expected keys are a double check: the function recomputes them from the row itself. The

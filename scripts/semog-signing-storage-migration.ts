@@ -35,7 +35,8 @@ const storeFromEnvironment = () => {
 const mib = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MiB`;
 const printPlan = (plan: SemogStoragePlanRow[]) => {
   for (const row of plan) {
-    const situacao = row.eligible ? 'ELEGÍVEL' : `fora: ${row.motivo}`;
+    const desde = row.elegivelEm ? ` (elegível a partir de ${row.elegivelEm.toISOString()})` : '';
+    const situacao = row.eligible ? 'ELEGÍVEL' : `fora: ${row.motivo}${desde}`;
     process.stdout.write(
       `${row.id}  ${mib(row.bytes)}  ${row.dataKey}  envelope=${row.envelopeId ?? '-'}  status=${row.status ?? '-'}${row.orfa ? ' (original órfão)' : ''}  ${situacao}\n`,
     );
