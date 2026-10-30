@@ -208,23 +208,29 @@ const exists = async (objects: SemogPurgeObjects, key: string) => (await objects
 const setupPurgeCases = async (deps: SemogStorageLiberacaoDeps, completedOriginalKey: string) => {
   const unique = await stored(deps, 'cancelado-unico');
   const shared = await stored(deps, 'compartilhado');
-  const sealedPart = await stored(deps, 'selo-parcial');
+  // Cancelled after a partial seal: its original (the item) and the round's sealed PDF.
+  const sealedOriginal = await stored(deps, 'original-com-selo-parcial');
+  const sealedRound = await stored(deps, 'pdf-do-selo-parcial');
   const recent = await stored(deps, 'cancelado-recente');
   const cases = {
     unique: await cancelledWith(deps, unique, 100),
     shared: await cancelledWith(deps, shared, 100),
     original: await cancelledWith(deps, { type: 'S3_PATH', data: completedOriginalKey }, 100),
-    sealedPart: await cancelledWith(deps, sealedPart, 100),
+    sealedPart: await cancelledWith(deps, sealedOriginal, 100),
     recent: await cancelledWith(deps, recent, 10),
   };
   // Same bytes, live elsewhere (dedupe): a PENDING envelope outside the bridge keeps the object.
   await deps.createEnvelope(shared);
+  // The real shape (partial-seal-service): data = the round's PDF, initialData = the original's key.
   await deps.sql(`INSERT INTO public."DocumentData"(id,type,data,"initialData")
-      VALUES('partial-seal-row','S3_PATH','${sealedPart.data}','${sealedPart.data}');
+      VALUES('partial-seal-row','S3_PATH','${sealedRound.data}','${sealedOriginal.data}');
     INSERT INTO semog_bridge.partial_seals("chaveOperacao","teamId","envelopeId",rodada,"documentDataId","hashPdf",assinantes)
       VALUES(gen_random_uuid(),${deps.actor.teamId},'${cases.sealedPart.envelopeId}',1,'partial-seal-row',
-        '${sealedPart.data.slice(10, 74)}','[1]');`);
-  return { keys: { unique, shared, sealedPart, recent, original: completedOriginalKey }, cases };
+        '${sealedRound.data.slice(10, 74)}','[1]');`);
+  return {
+    keys: { unique, shared, sealedOriginal, sealedRound, recent, original: completedOriginalKey },
+    cases,
+  };
 };
 
 const purgeOptions = { retentionDays: 90, graceHours: 24, immediateEnvelopeId: null, quem: 'teste-local' };
@@ -244,7 +250,10 @@ const checkRetentionPurge = async (deps: SemogStorageLiberacaoDeps, completedOri
   for (const [name, key] of [
     ['compartilhada (dedupe)', keys.shared.data],
     ['initialData de COMPLETED', keys.original],
-    ['selo parcial', keys.sealedPart.data],
+    // Decision (30/10): cancelled after a partial seal keeps both objects in R2 for good — the round is proof of
+    // signature, and it points at the original through initialData.
+    ['original de cancelado com selo parcial', keys.sealedOriginal.data],
+    ['PDF do selo parcial', keys.sealedRound.data],
     ['cancelado há 10 dias', keys.recent.data],
   ]) {
     assert(!purged.includes(key) && (await exists(real, key)), `purgou ${name}`);
