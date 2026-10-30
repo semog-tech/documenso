@@ -6,6 +6,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { PrismaClient } from '@prisma/client';
 import type { SemogPdfStore } from '../packages/lib/server-only/semog-signing/pdf-store';
 import { putSemogStoredPdf, readSemogStoredPdf } from '../packages/lib/server-only/semog-signing/pdf-store';
@@ -301,26 +302,17 @@ const checkResumeAndGrace = async (
   await deps.sql(
     `INSERT INTO public."DocumentData"(id,type,data,"initialData") VALUES('inline-corrompida','BYTES_64','%%%','%%%')`,
   );
-  const env: Record<string, string | undefined> = { ...process.env, SEMOG_SIGNING_ENABLED: 'true' };
   const errors: string[] = [];
-  const swept = await sweepSemogCancelledStorage({
-    client: deps.client,
-    read: (name) => env[name],
-    createObjects: (settings) => {
-      const objects = createSemogS3PurgeObjects(settings);
-      return {
-        ...objects,
-        write: (key, value) =>
-          key === keyOf(refusedBytes) ? Promise.reject(new Error('bucket recusou')) : objects.write(key, value),
-      };
-    },
-    log: { info: () => undefined, error: (message) => errors.push(message) },
+  const failure = await sweepFailure(deps, errors, (settings) => {
+    const objects = createSemogS3PurgeObjects(settings);
+    return {
+      ...objects,
+      write: (key, value) =>
+        key === keyOf(refusedBytes) ? Promise.reject(new Error('bucket recusou')) : objects.write(key, value),
+    };
   });
   await deps.sql(`DELETE FROM public."DocumentData" WHERE id='inline-corrompida'`);
-  assert(
-    swept.some((item) => item.chave === fresh.data && item.resultado === 'adiada'),
-    'carência não segurou',
-  );
+  assert(/PARTIAL FAILURE \(1\)/.test(failure), `o job com falha parcial deveria terminar falho: ${failure}`);
   assert(await exists(purge.real, fresh.data), 'carência apagou o objeto');
   const deferred = await deps.sql(`SELECT count(*) FROM semog_bridge.storage_purges WHERE chave='${fresh.data}'`);
   assert(deferred === '0', `adiamento pela carência virou linha permanente (${deferred})`);
@@ -334,6 +326,52 @@ const checkResumeAndGrace = async (
       errors.some((line) => /PARTIAL FAILURE/.test(line)),
     `falha parcial não apareceu no log do job: ${JSON.stringify(errors)}`,
   );
+  await checkCorruptedObjectFailsTheJob(deps);
+};
+/** Runs the daily sweep and returns the message it ended with: it must END FAILED (throw) after doing everything. */
+const sweepFailure = async (
+  deps: SemogStorageLiberacaoDeps,
+  errors: string[],
+  createObjects: (settings: SemogS3Settings) => SemogPurgeObjects,
+) => {
+  const env: Record<string, string | undefined> = { ...process.env, SEMOG_SIGNING_ENABLED: 'true' };
+  try {
+    await sweepSemogCancelledStorage({
+      client: deps.client,
+      read: (name) => env[name],
+      createObjects,
+      log: { info: () => undefined, error: (message) => errors.push(message) },
+    });
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return 'a varredura terminou sem falhar';
+};
+/** An object whose bytes do not hash to its key is corruption: kept, closed as 'desistida', and the job fails. */
+const checkCorruptedObjectFailsTheJob = async (deps: SemogStorageLiberacaoDeps) => {
+  const corrupted = await stored(deps, 'objeto-corrompido');
+  await cancelledWith(deps, corrupted, 100);
+  const s3 = new S3Client({
+    ...deps.settings,
+    region: deps.settings.region ?? 'us-east-1',
+    forcePathStyle: deps.settings.forcePathStyle === true,
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+  });
+  await s3.send(
+    new PutObjectCommand({ Bucket: deps.settings.bucket, Key: corrupted.data, Body: await deps.pdf('outros-bytes') }),
+  );
+  const errors: string[] = [];
+  const failure = await sweepFailure(deps, errors, (settings) => aged(createSemogS3PurgeObjects(settings)));
+  assert(/PARTIAL FAILURE \(1\)/.test(failure), `objeto corrompido deveria falhar o job: ${failure}`);
+  assert(
+    errors.some((line) => line.includes(`divergente: ${corrupted.data}`)),
+    `divergência sem log de erro: ${errors}`,
+  );
+  const record = await deps.sql(
+    `SELECT estado||'|'||observacao FROM semog_bridge.storage_purges WHERE chave='${corrupted.data}'`,
+  );
+  assert(record.startsWith('desistida|SHA-256 divergente'), `registro do objeto corrompido: ${record}`);
+  assert(await exists(createSemogS3PurgeObjects(deps.settings), corrupted.data), 'objeto corrompido foi apagado');
 };
 
 const runScript = (deps: SemogStorageLiberacaoDeps, script: string, args: string[]) =>

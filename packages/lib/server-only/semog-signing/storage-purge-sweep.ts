@@ -13,7 +13,8 @@ export type SemogPurgeSweepDeps = {
   createObjects: (settings: SemogS3Settings) => SemogPurgeObjects;
   log: { info: (message: string) => void; error: (message: string) => void };
 };
-const FAILED: SemogPurgeOutcome['resultado'][] = ['erro', 'conflito'];
+// 'divergente' is an object that does not hash to its key: corruption, so it fails the job like an error.
+const FAILED: SemogPurgeOutcome['resultado'][] = ['erro', 'conflito', 'divergente'];
 
 const migrationApplied = async (client: SqlClient) => {
   const rows = await client.$queryRaw<{ ready: boolean }[]>(
@@ -67,11 +68,12 @@ export const sweepSemogCancelledStorage = async (deps: SemogPurgeSweepDeps): Pro
   }
   const failures = inline.failed.length + outcomes.filter((item) => FAILED.includes(item.resultado)).length;
   const summary = `Semog storage purge: ${inline.migrated.length} inline migrated, ${inline.failed.length} inline failed, ${outcomes.length} key(s) handled`;
-  // A partial failure is said once more at error level, so the job log shows it without reading every line.
-  if (failures > 0) {
-    deps.log.error(`${summary}; PARTIAL FAILURE (${failures}).`);
-  } else {
+  if (failures === 0) {
     deps.log.info(`${summary}.`);
+    return outcomes;
   }
-  return outcomes;
+  // Everything was processed; now the job ends FAILED, with the count, so the failure is not just a log line.
+  const partial = `${summary}; PARTIAL FAILURE (${failures}).`;
+  deps.log.error(partial);
+  throw new Error(partial);
 };
