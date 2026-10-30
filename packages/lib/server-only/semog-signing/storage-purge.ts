@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 
 import type { SemogPdfStore } from './pdf-store';
-import { readSemogStoredPdf } from './pdf-store';
+import { readSemogStoredPdf, semogPdfKeyHash } from './pdf-store';
 
 /**
  * Purge of the R2 objects of CANCELLED bridge envelopes after the retention (db/2026-11-01-semog-storage-liberacao).
@@ -55,6 +56,8 @@ export type SemogPurgeResult =
   | 'ausente'
   | 'adiada'
   | 'desistida'
+  /** The object does not hash to its key: corruption, kept and reported, never removed. */
+  | 'divergente'
   | 'restaurada'
   | 'conflito'
   | 'ignorada'
@@ -147,12 +150,13 @@ const restoreOrRecord = async ({ deps, record }: Step, bytes: Uint8Array, confli
 };
 const removeProven = async (step: Step) => {
   const { deps, record } = step;
-  let bytes: Uint8Array;
-  try {
-    bytes = await readSemogStoredPdf(deps.objects, record.chave);
-  } catch (error) {
-    await deps.ledger.abandon(record.id, `objeto não confere com a chave ou ilegível: ${message(error)}`.slice(0, 500));
-    return outcome(record, 'desistida', 'objeto não confere com a chave');
+  // A read failure (network, timeout) propagates: the intent stays 'pendente' and the next run resumes it. Only bytes
+  // that really hash to something else close it for good — that is corruption, not a hiccup.
+  const bytes = await deps.objects.read(record.chave);
+  const found = createHash('sha256').update(bytes).digest('hex');
+  if (found !== semogPdfKeyHash(record.chave)) {
+    await deps.ledger.abandon(record.id, `SHA-256 divergente: o objeto tem ${found}; nada foi apagado`);
+    return outcome(record, 'divergente', `SHA-256 divergente (${found})`);
   }
   await deps.objects.remove(record.chave);
   const conflicts = await deps.ledger.conflicts(record.id);

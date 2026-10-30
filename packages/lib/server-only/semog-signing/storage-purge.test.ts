@@ -165,7 +165,20 @@ describe('Purga de PDF de envelope cancelado', () => {
     objects.set(key, { bytes: pdf('adulterado'), modified: OLD });
     const ledger = memoryLedger({ candidates: [key] }, calls);
     const outcomes = await runSemogStoragePurge({ ledger, objects: store }, { ...options, apply: true });
-    expect(outcomes[0].resultado).toBe('desistida');
+    expect(outcomes[0].resultado).toBe('divergente');
+    expect(calls.at(-1)).toMatch(/^abandon:.*SHA-256 divergente/);
+    expect(objects.has(key)).toBe(true);
+  });
+  it('falha de rede na leitura de prova deixa a intenção pendente: nada de "desistida" permanente', async () => {
+    const calls: string[] = [];
+    const bytes = pdf('rede');
+    const { store, objects } = memoryObjects([{ bytes }], calls);
+    store.read = vi.fn(() => Promise.reject(new Error('socket hang up')));
+    const key = semogPdfKeyFor(sha256(bytes));
+    const ledger = memoryLedger({ candidates: [key] }, calls);
+    const outcomes = await runSemogStoragePurge({ ledger, objects: store }, { ...options, apply: true });
+    expect(outcomes[0]).toMatchObject({ resultado: 'erro', detalhe: 'socket hang up' });
+    expect(calls).toEqual([`begin:${key}`]);
     expect(objects.has(key)).toBe(true);
   });
   it('falha ao apagar deixa a intenção pendente (retomável) e segue para a próxima chave', async () => {
