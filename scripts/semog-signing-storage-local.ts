@@ -20,12 +20,12 @@ import type { SemogPdfStore } from '../packages/lib/server-only/semog-signing/pd
 import { putSemogStoredPdf } from '../packages/lib/server-only/semog-signing/pdf-store';
 import { createSemogS3PdfStore } from '../packages/lib/server-only/semog-signing/pdf-store-s3';
 import { createSemogSigningRuntime } from '../packages/lib/server-only/semog-signing/runtime';
-import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
 import {
   backupSemogStorageRows,
   migrateSemogStorageRow,
   planSemogStorageMigration,
 } from '../packages/lib/server-only/semog-signing/storage-migration';
+import { checkSemogStorageLiberacaoLocal } from './semog-signing-storage-liberacao-checks';
 
 const id = randomUUID();
 const containers = { db: `semog-storage-db-${id}`, s3: `semog-storage-s3-${id}` };
