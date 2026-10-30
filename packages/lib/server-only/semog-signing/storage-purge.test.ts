@@ -102,7 +102,7 @@ describe('Purga de PDF de envelope cancelado', () => {
     expect(calls).toEqual([`begin:${key}`, `remove:${key}`, `finish:p-${key.slice(10, 18)}:false`]);
     expect(objects.has(key)).toBe(false);
   });
-  it('carência: objeto gravado há pouco não é apagado e a intenção é encerrada com o motivo', async () => {
+  it('carência: objeto gravado há pouco não é apagado e nada vai ao registro permanente', async () => {
     const calls: string[] = [];
     const bytes = pdf('recente');
     const { store, objects } = memoryObjects([{ bytes, modified: new Date(NOW.getTime() - 3600_000) }], calls);
@@ -111,7 +111,7 @@ describe('Purga de PDF de envelope cancelado', () => {
     const outcomes = await runSemogStoragePurge({ ledger, objects: store }, { ...options, apply: true });
     expect(outcomes[0].resultado).toBe('adiada');
     expect(calls.some((call) => call.startsWith('remove:'))).toBe(false);
-    expect(calls.at(-1)).toMatch(/^abandon:.*carência/);
+    expect(calls).toEqual([]);
     expect(objects.has(key)).toBe(true);
   });
   it('objeto já ausente: conclui como ausente, sem tentar apagar', async () => {

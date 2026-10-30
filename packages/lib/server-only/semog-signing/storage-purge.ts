@@ -124,7 +124,7 @@ export const readSemogPurgeSettings = (read: (name: string) => string | undefine
 });
 
 type Deps = { ledger: SemogPurgeLedger; objects: SemogPurgeObjects };
-type Step = { deps: Deps; options: SemogPurgeOptions; record: SemogPurgeRecord };
+type Step = { deps: Deps; record: SemogPurgeRecord };
 const outcome = (record: SemogPurgeRecord, resultado: SemogPurgeResult, detalhe?: string): SemogPurgeOutcome => ({
   chave: record.chave,
   envelopes: record.envelopes,
@@ -163,7 +163,7 @@ const removeProven = async (step: Step) => {
   return outcome(record, 'purgada');
 };
 const settle = async (step: Step): Promise<SemogPurgeOutcome> => {
-  const { deps, options, record } = step;
+  const { deps, record } = step;
   const modified = await deps.objects.lastModified(record.chave);
   if (modified === null) {
     await deps.ledger.finish(record.id, true);
@@ -173,12 +173,13 @@ const settle = async (step: Step): Promise<SemogPurgeOutcome> => {
     await deps.ledger.abandon(record.id, 'chave deixou de ser purgável antes da remoção');
     return outcome(record, 'desistida', 'chave deixou de ser purgável');
   }
-  const now = (options.now ?? (() => new Date()))();
-  if (now.getTime() - modified.getTime() < options.graceHours * 3_600_000) {
-    await deps.ledger.abandon(record.id, `carência: objeto gravado em ${modified.toISOString()}`);
-    return outcome(record, 'adiada', `gravado em ${modified.toISOString()}`);
-  }
   return await removeProven(step);
+};
+/** Checked BEFORE any intent is recorded: a deferral leaves no row in the permanent ledger, the next run retries. */
+const recentlyWritten = async (deps: Deps, options: SemogPurgeOptions, chave: string) => {
+  const modified = await deps.objects.lastModified(chave);
+  const now = (options.now ?? (() => new Date()))();
+  return modified !== null && now.getTime() - modified.getTime() < options.graceHours * 3_600_000 ? modified : null;
 };
 
 const motivoFor = (options: SemogPurgeOptions) =>
@@ -190,6 +191,11 @@ const purgeKey = async (
 ): Promise<SemogPurgeOutcome> => {
   let record: SemogPurgeRecord;
   try {
+    const recent = await recentlyWritten(deps, options, candidate.chave);
+    if (recent !== null) {
+      const detalhe = `carência: gravado em ${recent.toISOString()}`;
+      return { chave: candidate.chave, envelopes: candidate.envelopes, resultado: 'adiada', detalhe };
+    }
     record = await deps.ledger.begin({
       chave: candidate.chave,
       retentionDays: options.retentionDays,
@@ -203,7 +209,7 @@ const purgeKey = async (
     return { chave: candidate.chave, envelopes: candidate.envelopes, resultado, detalhe: message(error) };
   }
   try {
-    return await settle({ deps, options, record });
+    return await settle({ deps, record });
   } catch (error) {
     // The intent stays 'pendente': the next run resumes it; nothing claims a removal that may not have happened.
     return outcome(record, 'erro', message(error));

@@ -22,7 +22,7 @@ import {
 } from '../packages/lib/server-only/semog-signing/pdf-store-s3';
 import {
   migrateSemogCancelledInline,
-  planSemogStorageMigration,
+  planSemogCancelledInline,
 } from '../packages/lib/server-only/semog-signing/storage-migration';
 import type { SemogPurgeObjects, SemogPurgeOutcome } from '../packages/lib/server-only/semog-signing/storage-purge';
 import {
@@ -111,18 +111,21 @@ const objectsFromEnvironment = () => {
 };
 /** An inline PDF of a cancelled envelope goes to R2 first (only with --aplicar); the dry run just counts it. */
 const migrateInlineFirst = async (client: PrismaClient, objects: SemogPurgeObjects, args: Arguments) => {
-  const inline = (await planSemogStorageMigration(client)).filter(
-    (row) => row.eligible && row.status === 'CANCELLED' && (args.envelope === null || row.envelopeId === args.envelope),
-  );
-  if (inline.length === 0) {
-    return;
-  }
   if (!args.apply) {
-    process.stdout.write(`${inline.length} linha(s) inline seriam migradas para o R2 antes da purga.\n`);
-    return;
+    const inline = await planSemogCancelledInline(client, args.envelope);
+    if (inline.length > 0) {
+      process.stdout.write(`${inline.length} linha(s) inline seriam migradas para o R2 antes da purga.\n`);
+    }
+    return 0;
   }
   const moved = await migrateSemogCancelledInline(client, objects, args.envelope);
-  process.stdout.write(`Migradas para o R2 antes da purga: ${moved.join(', ')}\n`);
+  if (moved.migrated.length > 0) {
+    process.stdout.write(`Migradas para o R2 antes da purga: ${moved.migrated.join(', ')}\n`);
+  }
+  for (const failure of moved.failed) {
+    process.stderr.write(`Falha ao migrar ${failure.id} [${failure.envelopeId ?? '-'}]: ${failure.erro}\n`);
+  }
+  return moved.failed.length;
 };
 const purge = async (client: PrismaClient, objects: SemogPurgeObjects, args: Arguments) => {
   const settings = readSemogPurgeSettings((name) => process.env[name]);
@@ -147,13 +150,13 @@ const main = async () => {
       await describeEnvelope(client, args.envelope);
     }
     const objects = objectsFromEnvironment();
-    await migrateInlineFirst(client, objects, args);
+    const inlineFailures = await migrateInlineFirst(client, objects, args);
     const outcomes = await purge(client, objects, args);
     printOutcomes(outcomes);
     if (!args.apply) {
       process.stdout.write('Simulação: nada foi alterado. Use --aplicar para executar.\n');
     }
-    if (outcomes.some((item) => item.resultado === 'erro' || item.resultado === 'conflito')) {
+    if (inlineFailures > 0 || outcomes.some((item) => item.resultado === 'erro' || item.resultado === 'conflito')) {
       process.exitCode = 1;
     }
   } finally {

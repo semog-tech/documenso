@@ -46,7 +46,12 @@ export const sweepSemogCancelledStorage = async (deps: SemogPurgeSweepDeps): Pro
     return [];
   }
   const objects = deps.createObjects(settings);
-  const migrated = await migrateSemogCancelledInline(deps.client, objects, null);
+  const inline = await migrateSemogCancelledInline(deps.client, objects, null);
+  for (const failure of inline.failed) {
+    deps.log.error(
+      `Semog storage purge: inline migration failed for DocumentData ${failure.id} [${failure.envelopeId ?? '-'}]: ${failure.erro}`,
+    );
+  }
   const outcomes = await runSemogStoragePurge(
     { ledger: createSemogPurgeLedger(deps.client), objects },
     {
@@ -60,6 +65,13 @@ export const sweepSemogCancelledStorage = async (deps: SemogPurgeSweepDeps): Pro
     const line = `Semog storage purge ${item.resultado}: ${item.chave} [${item.envelopes.join(',')}]${item.detalhe ? ` ${item.detalhe}` : ''}`;
     (FAILED.includes(item.resultado) ? deps.log.error : deps.log.info)(line);
   }
-  deps.log.info(`Semog storage purge: ${migrated.length} inline migrated, ${outcomes.length} key(s) handled.`);
+  const failures = inline.failed.length + outcomes.filter((item) => FAILED.includes(item.resultado)).length;
+  const summary = `Semog storage purge: ${inline.migrated.length} inline migrated, ${inline.failed.length} inline failed, ${outcomes.length} key(s) handled`;
+  // A partial failure is said once more at error level, so the job log shows it without reading every line.
+  if (failures > 0) {
+    deps.log.error(`${summary}; PARTIAL FAILURE (${failures}).`);
+  } else {
+    deps.log.info(`${summary}.`);
+  }
   return outcomes;
 };

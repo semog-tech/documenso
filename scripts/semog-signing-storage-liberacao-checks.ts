@@ -284,18 +284,47 @@ const checkResumeAndGrace = async (
   // Daily sweep with the real clock: the object was just written, so the grace keeps it and says so.
   const fresh = await stored(deps, 'gravado-agora');
   await cancelledWith(deps, fresh, 100);
+  // One cancelled inline row whose upload the bucket refuses, one that goes through: the first must not stop the second.
+  const refusedBytes = await deps.pdf('inline-recusado-pelo-bucket');
+  const refused = await cancelledWith(deps, inline(refusedBytes), 100);
+  const accepted = await cancelledWith(deps, inline(await deps.pdf('inline-aceito')), 100);
+  // An inline row of nobody, with bytes that do not even decode: the sweep's plan must never touch it.
+  await deps.sql(
+    `INSERT INTO public."DocumentData"(id,type,data,"initialData") VALUES('inline-corrompida','BYTES_64','%%%','%%%')`,
+  );
   const env: Record<string, string | undefined> = { ...process.env, SEMOG_SIGNING_ENABLED: 'true' };
+  const errors: string[] = [];
   const swept = await sweepSemogCancelledStorage({
     client: deps.client,
     read: (name) => env[name],
-    createObjects: createSemogS3PurgeObjects,
-    log: { info: () => undefined, error: (message) => process.stderr.write(`${message}\n`) },
+    createObjects: (settings) => {
+      const objects = createSemogS3PurgeObjects(settings);
+      return {
+        ...objects,
+        write: (key, value) =>
+          key === keyOf(refusedBytes) ? Promise.reject(new Error('bucket recusou')) : objects.write(key, value),
+      };
+    },
+    log: { info: () => undefined, error: (message) => errors.push(message) },
   });
+  await deps.sql(`DELETE FROM public."DocumentData" WHERE id='inline-corrompida'`);
   assert(
     swept.some((item) => item.chave === fresh.data && item.resultado === 'adiada'),
     'carência não segurou',
   );
   assert(await exists(purge.real, fresh.data), 'carência apagou o objeto');
+  const deferred = await deps.sql(`SELECT count(*) FROM semog_bridge.storage_purges WHERE chave='${fresh.data}'`);
+  assert(deferred === '0', `adiamento pela carência virou linha permanente (${deferred})`);
+  const refusedRow = await itemData(deps, refused.envelopeId);
+  assert(
+    refusedRow.type === 'BYTES_64' && (await itemData(deps, accepted.envelopeId)).type === 'S3_PATH',
+    'falha de uma linha inline derrubou a outra',
+  );
+  assert(
+    errors.some((line) => line.includes(`inline migration failed for DocumentData ${refusedRow.id}`)) &&
+      errors.some((line) => /PARTIAL FAILURE/.test(line)),
+    `falha parcial não apareceu no log do job: ${JSON.stringify(errors)}`,
+  );
 };
 
 const runScript = (deps: SemogStorageLiberacaoDeps, script: string, args: string[]) =>

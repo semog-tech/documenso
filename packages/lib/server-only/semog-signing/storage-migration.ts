@@ -136,20 +136,44 @@ export const backupSemogStorageRows = async (client: SqlClient, ids: string[], p
   }
 };
 /**
+ * Only the inline rows the purge needs: items of eligible CANCELLED envelopes. Unlike the full plan, no other inline
+ * row of the database is decoded or hashed (the select list runs only for rows that pass the WHERE).
+ */
+export const planSemogCancelledInline = async (client: SqlClient, envelopeId: string | null) =>
+  await client.$queryRaw<SemogStoragePlanRow[]>(Prisma.sql`
+    SELECT d.id, octet_length(decode(d.data,'base64'))::int bytes,
+      semog_bridge.semog_pdf_key(d.data) "dataKey", semog_bridge.semog_pdf_key(d."initialData") "initialKey",
+      i."envelopeId", false orfa, e.status::text status, true ponte, true eligible, NULL motivo, NULL "elegivelEm"
+    FROM public."DocumentData" d
+    JOIN public."EnvelopeItem" i ON i."documentDataId"=d.id
+    JOIN public."Envelope" e ON e.id=i."envelopeId"
+    WHERE d.type='BYTES_64' AND e.status='CANCELLED' AND (${envelopeId}::text IS NULL OR e.id=${envelopeId}::text)
+      AND semog_bridge.storage_migration_eligible(e.id)
+    ORDER BY d.id`);
+export type SemogInlineMigrationFailure = { id: string; envelopeId: string | null; erro: string };
+/**
  * Before the purge: a CANCELLED envelope's PDF still inline goes to R2 first (bytes proven, row swapped by the
- * database function), so the retention can later remove the object. Only eligible CANCELLED rows, optionally of one
- * envelope. Returns the ids moved.
+ * database function), so the retention can later remove the object. Optionally of one envelope. One row that fails
+ * is reported and the others go on: the caller decides how loud to be.
  */
 export const migrateSemogCancelledInline = async (
   client: SqlClient,
   store: SemogPdfStore,
   envelopeId: string | null,
-): Promise<string[]> => {
-  const rows = (await planSemogStorageMigration(client)).filter(
-    (row) => row.eligible && row.status === 'CANCELLED' && (envelopeId === null || row.envelopeId === envelopeId),
-  );
-  for (const row of rows) {
-    await migrateSemogStorageRow(client, store, row);
+): Promise<{ migrated: string[]; failed: SemogInlineMigrationFailure[] }> => {
+  const migrated: string[] = [];
+  const failed: SemogInlineMigrationFailure[] = [];
+  for (const row of await planSemogCancelledInline(client, envelopeId)) {
+    try {
+      await migrateSemogStorageRow(client, store, row);
+      migrated.push(row.id);
+    } catch (error) {
+      failed.push({
+        id: row.id,
+        envelopeId: row.envelopeId,
+        erro: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  return rows.map((row) => row.id);
+  return { migrated, failed };
 };
