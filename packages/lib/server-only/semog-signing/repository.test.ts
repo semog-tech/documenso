@@ -43,6 +43,14 @@ describe('signing persistence boundary', () => {
       });
     }
   });
+  it('40001 is a stale snapshot only on register_snapshot; on any other function it stays unavailable', async () => {
+    const query = vi.fn().mockRejectedValue({ code: '40001', message: 'could not serialize access' });
+    const repository = createSemogSigningRepository(createSemogSigningPostgresClient({ query }));
+    await expect(repository.getSnapshot({ teamId: 1, envelopeId: 'envelope', recipientId: 1 })).rejects.toMatchObject({
+      code: 'UNKNOWN_ERROR',
+      message: 'Signing persistence is unavailable',
+    });
+  });
   it('keeps privilege errors as unavailable rather than pretending a conflict', async () => {
     const query = vi.fn().mockRejectedValue({ code: '42501', detail: 'private table privileges' });
     const repository = createSemogSigningRepository(createSemogSigningPostgresClient({ query }));

@@ -85,14 +85,19 @@ const sqlState = (error: unknown) => {
   return 'code' in error && error.code === 'P2010' ? nested : 'code' in error ? error.code : undefined;
 };
 // This is a PostgreSQL function adapter, not a PostgREST endpoint. Identifiers are allowlisted.
-const executeStatement = async (client: SemogSigningSqlClient, statement: { text: string; values: unknown[] }) => {
+const executeStatement = async (
+  client: SemogSigningSqlClient,
+  name: string,
+  statement: { text: string; values: unknown[] },
+) => {
   try {
     return await client.query(statement.text, statement.values);
   } catch (error) {
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
       throw new AppError('INVALID_REQUEST', { message: 'Signing persistence conflict', statusCode: 409 });
     }
-    if (sqlState(error) === '40001') {
+    // Only register_snapshot raises it on purpose; elsewhere a 40001 is not this refusal.
+    if (name === 'semog_signing_register_snapshot' && sqlState(error) === '40001') {
       throw new AppError('INVALID_REQUEST', { message: SEMOG_STALE_SNAPSHOT, statusCode: 409 });
     }
     throw error;
@@ -106,7 +111,7 @@ export const createSemogSigningPostgresClient = (client: SemogSigningSqlClient):
     if (!Object.hasOwn(statements, name)) {
       throw new AppError('INVALID_REQUEST', { message: 'Unsupported signing persistence function' });
     }
-    const response = await executeStatement(client, statement);
+    const response = await executeStatement(client, name, statement);
     if (response.rows.length !== 1) {
       throw new AppError('UNKNOWN_ERROR', { message: 'Invalid signing persistence result' });
     }
