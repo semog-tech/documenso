@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { AppError, AppErrorCode } from '../../errors/app-error';
+import { SEMOG_STALE_SNAPSHOT } from './repository';
 import { createSemogSigningService } from './service';
 import { serviceFixture } from './service-test-fixtures';
 import { hashSemogManifestation } from './service-validation';
@@ -171,6 +173,22 @@ describe('Semog durable reservation service', () => {
     expect(fixture.authenticate).not.toHaveBeenCalled();
     expect(fixture.readCurrent).not.toHaveBeenCalled();
     expect(fixture.repository.registerSnapshot).not.toHaveBeenCalled();
+  });
+  it('inscrição recusada por documento trocado no meio relê e tenta uma vez; na segunda recusa, propaga', async () => {
+    const stale = new AppError(AppErrorCode.INVALID_REQUEST, { message: SEMOG_STALE_SNAPSHOT, statusCode: 409 });
+    const fixture = serviceFixture();
+    fixture.repository.registerSnapshot.mockRejectedValueOnce(stale);
+    await fixture.service.enroll(fixture.actor, fixture.enrollment);
+    expect(fixture.readCurrent).toHaveBeenCalledTimes(2);
+    expect(fixture.repository.registerSnapshot).toHaveBeenCalledTimes(2);
+    const twice = serviceFixture();
+    twice.repository.registerSnapshot.mockRejectedValueOnce(stale).mockRejectedValueOnce(stale);
+    await expect(twice.service.enroll(twice.actor, twice.enrollment)).rejects.toBe(stale);
+    expect(twice.repository.registerSnapshot).toHaveBeenCalledTimes(2);
+    const other = serviceFixture();
+    other.repository.registerSnapshot.mockRejectedValueOnce(new AppError(AppErrorCode.UNKNOWN_ERROR));
+    await expect(other.service.enroll(other.actor, other.enrollment)).rejects.toMatchObject({ code: 'UNKNOWN_ERROR' });
+    expect(other.repository.registerSnapshot).toHaveBeenCalledTimes(1);
   });
   it('does not expose private snapshot content at enrollment', async () => {
     const fixture = serviceFixture();

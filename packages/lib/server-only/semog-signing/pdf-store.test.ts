@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSemogDraftService } from './draft-service';
 import { createSemogPdfReader } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
-import { persistSemogDerivedPdf, readSemogStoredPdf, semogPdfKeyFor } from './pdf-store';
+import {
+  ensureSemogStoredPdf,
+  persistSemogDerivedPdf,
+  readSemogStoredPdf,
+  SEMOG_STORAGE_ENSURE_FAILED,
+  semogPdfKeyFor,
+} from './pdf-store';
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const memoryStore = () => {
@@ -110,5 +116,64 @@ describe('Rascunho com armazenamento de objetos', () => {
     await expect(service.create({ teamId: 1, userId: 1 }, body)).rejects.toThrow('interrompida');
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(store.write).toHaveBeenCalledTimes(1);
+  });
+  it('objeto apagado entre o upload e o commit (purga) é regravado depois do commit a partir dos bytes', async () => {
+    const { objects, store } = memoryStore();
+    const { pdf, body } = await draftBody();
+    const key = semogPdfKeyFor(sha256(pdf));
+    const result = { envelopeId: 'env' };
+    const transaction = <T>(): Promise<T> => {
+      objects.delete(key);
+      // Stand-in transaction without a client to run the callback: it resolves to what the commit would return.
+      return Promise.resolve(result as unknown as T);
+    };
+    const service = createSemogDraftService({
+      enabled: true,
+      client: { $transaction: transaction },
+      authenticate: async () => ({ teamId: 1, userId: 1 }),
+      pdfStore: store,
+    });
+    expect(await service.create({ teamId: 1, userId: 1 }, body)).toBe(result);
+    expect(Buffer.from(objects.get(key) ?? []).equals(Buffer.from(pdf))).toBe(true);
+  });
+});
+
+describe('Reconferência depois do commit', () => {
+  it('com HEAD: presente não regrava; ausente regrava e prova pelo conteúdo', async () => {
+    const { objects, store } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    const exists = vi.fn((candidate: string) => Promise.resolve(objects.has(candidate)));
+    objects.set(key, bytes);
+    await ensureSemogStoredPdf({ ...store, exists }, key, bytes);
+    expect(store.write).not.toHaveBeenCalled();
+    expect(store.read).not.toHaveBeenCalled();
+    objects.delete(key);
+    await ensureSemogStoredPdf({ ...store, exists }, key, bytes);
+    expect(objects.get(key)).toBe(bytes);
+    expect(store.read).toHaveBeenCalledTimes(1);
+  });
+  it('falha de rede no HEAD é repetida com espera curta; depois de 3 tentativas, erro com código próprio', async () => {
+    const { objects, store } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    objects.set(key, bytes);
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const flaky = vi.fn<(candidate: string) => Promise<boolean>>().mockRejectedValueOnce(reset).mockResolvedValue(true);
+    await ensureSemogStoredPdf({ ...store, exists: flaky }, key, bytes, { backoffMs: 0 });
+    expect(flaky).toHaveBeenCalledTimes(2);
+    const down = vi.fn<(candidate: string) => Promise<boolean>>().mockRejectedValue(reset);
+    await expect(ensureSemogStoredPdf({ ...store, exists: down }, key, bytes, { backoffMs: 0 })).rejects.toMatchObject({
+      code: SEMOG_STORAGE_ENSURE_FAILED,
+      statusCode: 503,
+    });
+    expect(down).toHaveBeenCalledTimes(3);
+  });
+  it('sem HEAD: lê e confere; ausente ou adulterado é regravado', async () => {
+    const { objects, store } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    await ensureSemogStoredPdf(store, key, bytes);
+    expect(objects.get(key)).toBe(bytes);
+    objects.set(key, new TextEncoder().encode('%PDF-1.7 trocado'));
+    await ensureSemogStoredPdf(store, key, bytes);
+    expect(objects.get(key)).toBe(bytes);
   });
 });

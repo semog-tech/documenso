@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createSemogSigningPostgresClient,
   createSemogSigningRepository,
+  SEMOG_STALE_SNAPSHOT,
   type SemogSigningSnapshot,
 } from './repository';
 
@@ -26,6 +27,28 @@ describe('signing persistence boundary', () => {
       code: 'INVALID_REQUEST',
       message: 'Signing persistence conflict',
       statusCode: 409,
+    });
+  });
+  it('maps a stale snapshot (40001 from register, raw pg or Prisma P2010) to its own retryable conflict', async () => {
+    for (const error of [
+      { code: '40001', message: 'semog snapshot document changed' },
+      { code: 'P2010', meta: { code: '40001', message: 'semog snapshot document changed' } },
+    ]) {
+      const query = vi.fn().mockRejectedValue(error);
+      const repository = createSemogSigningRepository(createSemogSigningPostgresClient({ query }));
+      await expect(repository.registerSnapshot(snapshot)).rejects.toMatchObject({
+        code: 'INVALID_REQUEST',
+        message: SEMOG_STALE_SNAPSHOT,
+        statusCode: 409,
+      });
+    }
+  });
+  it('40001 is a stale snapshot only on register_snapshot; on any other function it stays unavailable', async () => {
+    const query = vi.fn().mockRejectedValue({ code: '40001', message: 'could not serialize access' });
+    const repository = createSemogSigningRepository(createSemogSigningPostgresClient({ query }));
+    await expect(repository.getSnapshot({ teamId: 1, envelopeId: 'envelope', recipientId: 1 })).rejects.toMatchObject({
+      code: 'UNKNOWN_ERROR',
+      message: 'Signing persistence is unavailable',
     });
   });
   it('keeps privilege errors as unavailable rather than pretending a conflict', async () => {

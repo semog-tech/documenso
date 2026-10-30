@@ -1,8 +1,9 @@
-import { AppErrorCode } from '../../errors/app-error';
+import { AppError, AppErrorCode } from '../../errors/app-error';
 import { semogAuthenticationMethod } from './auth-evidence';
 import type { SemogJsonObject, SemogSnapshot } from './contract';
 import type { SemogExecutionResult } from './execution-contract';
 import type { createSemogSigningRepository } from './repository';
+import { SEMOG_STALE_SNAPSHOT } from './repository';
 import type { SemogManifestation } from './service-validation';
 import {
   hashSemogManifestation,
@@ -185,12 +186,21 @@ export const createSemogSigningService = (dependencies: SemogSigningDependencies
   enroll: async (actor: SemogActor, body: unknown) => {
     requireEnabled(dependencies);
     const input = ZSemogEnrollment.parse(body);
-    const current = await dependencies.readCurrent({ envelopeId: input.envelopeId, actor });
-    const snapshot = buildSemogSnapshot({ ...current, ...input, teamId: actor.teamId });
-    if (snapshot.envelopeId !== input.envelopeId) {
-      throw semogError(AppErrorCode.NOT_FOUND, 404);
-    }
-    const stored = await dependencies.repository.registerSnapshot(snapshot);
+    const register = async () => {
+      const current = await dependencies.readCurrent({ envelopeId: input.envelopeId, actor });
+      const snapshot = buildSemogSnapshot({ ...current, ...input, teamId: actor.teamId });
+      if (snapshot.envelopeId !== input.envelopeId) {
+        throw semogError(AppErrorCode.NOT_FOUND, 404);
+      }
+      return await dependencies.repository.registerSnapshot(snapshot);
+    };
+    // The document changed between the read and the database lock (storage migration): read again, once.
+    const stored = await register().catch((error: unknown) => {
+      if (error instanceof AppError && error.message === SEMOG_STALE_SNAPSHOT) {
+        return register();
+      }
+      throw error;
+    });
     return enrollmentResult({ ...stored, conteudo: jsonObject(stored.conteudo) });
   },
   reserve: async (actor: SemogActor, body: unknown) => {

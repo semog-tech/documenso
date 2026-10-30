@@ -5,7 +5,7 @@ import { lockSemogDraft, replaySemogDraft, saveSemogDraftReceipt } from './draft
 import { semogDraftMaximum, validateSemogBinaryDraft, validateSemogDraft } from './draft-validation';
 import type { SemogPrismaTransactionRunner } from './execution';
 import type { SemogPdfStore, SemogStoredPdf } from './pdf-store';
-import { putSemogStoredPdf } from './pdf-store';
+import { ensureSemogStoredPdf, putSemogStoredPdf } from './pdf-store';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
@@ -52,7 +52,7 @@ export const createSemogDraftService = (dependencies: Dependencies) => {
   const persist = async (actor: SemogActor, validated: Awaited<ReturnType<typeof validateSemogDraft>>) => {
     const { input, hash } = validated;
     const document = await storeDocument(validated);
-    return await dependencies.client.$transaction(
+    const result = await dependencies.client.$transaction(
       async (tx) => {
         await assertActor(tx, actor);
         await lockSemogDraft(tx, actor, input);
@@ -66,6 +66,11 @@ export const createSemogDraftService = (dependencies: Dependencies) => {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 60000, maxWait: 10000 },
     );
+    // The row is committed: if the purge removed the object meanwhile, the bytes in memory put it back.
+    if (dependencies.pdfStore && document.type === 'S3_PATH') {
+      await ensureSemogStoredPdf(dependencies.pdfStore, document.data, validated.bytes);
+    }
+    return result;
   };
   const create = async (actor: SemogActor, body: unknown) => {
     requireEnabled();

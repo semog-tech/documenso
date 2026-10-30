@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { SEMOG_MAX_SEALED_PDF_BYTES } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyHash } from './pdf-store';
+import type { SemogPurgeObjects } from './storage-purge';
 
 /** The native upload transport's settings (NEXT_PRIVATE_UPLOAD_*), passed in by the host; nothing read here. */
 export type SemogS3Settings = {
@@ -36,7 +43,7 @@ const isMissing = (error: unknown) =>
  * Same client configuration as the native S3Provider, including its checksum settings for S3-compatible
  * providers such as R2, plus explicit timeouts. Direct GetObject/PutObject instead of presigned URLs.
  */
-export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore => {
+const connect = (settings: SemogS3Settings) => {
   const timeouts = { ...DEFAULT_TIMEOUTS, ...settings.timeouts };
   const client = new S3Client({
     endpoint: settings.endpoint,
@@ -51,6 +58,10 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
       throwOnRequestTimeout: true,
     },
   });
+  return { client, timeouts };
+};
+export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore => {
+  const { client, timeouts } = connect(settings);
   const read = async (key: string, abortSignal: AbortSignal) => {
     const object = await client.send(new GetObjectCommand({ Bucket: settings.bucket, Key: key }), { abortSignal });
     if (!object.Body || (object.ContentLength ?? 0) > SEMOG_MAX_SEALED_PDF_BYTES) {
@@ -95,6 +106,7 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
   };
   return {
     read: (key) => read(key, AbortSignal.timeout(timeouts.operationMs)),
+    exists: (key) => exists(key, AbortSignal.timeout(timeouts.operationMs)),
     write: async (key, bytes) => {
       const expected = semogPdfKeyHash(key);
       if (expected === null || sha256(bytes).digest('hex') !== expected) {
@@ -107,5 +119,61 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
       }
       await put(key, bytes, deadline);
     },
+  };
+};
+
+/**
+ * The purge's extra calls on the same client configuration. Only bridge keys (semog/pdf/<sha256>.pdf) are ever
+ * deleted; which key may go is decided by the database (storage_purge_begin), never here.
+ */
+export const createSemogS3PurgeObjects = (settings: SemogS3Settings): SemogPurgeObjects => {
+  const { client, timeouts } = connect(settings);
+  const lastModified = async (key: string) => {
+    try {
+      const head = await client.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: key }), {
+        abortSignal: AbortSignal.timeout(timeouts.operationMs),
+      });
+      if (!head.LastModified) {
+        throw failure(`Objeto ${key} sem data de gravação.`);
+      }
+      return head.LastModified;
+    } catch (error) {
+      if (isMissing(error)) {
+        return null;
+      }
+      throw error;
+    }
+  };
+  const remove = async (key: string) => {
+    if (semogPdfKeyHash(key) === null) {
+      throw failure('Só PDFs da ponte são apagados pela purga.');
+    }
+    await client.send(new DeleteObjectCommand({ Bucket: settings.bucket, Key: key }), {
+      abortSignal: AbortSignal.timeout(timeouts.operationMs),
+    });
+  };
+  return { ...createSemogS3PdfStore(settings), lastModified, remove };
+};
+
+/**
+ * The native upload settings (NEXT_PUBLIC_UPLOAD_TRANSPORT, NEXT_PRIVATE_UPLOAD_*) through the caller's reader, so
+ * this module still reads no environment itself. Undefined when the transport is not s3 (PDFs stay inline).
+ */
+export const semogS3SettingsFromEnv = (read: (name: string) => string | undefined): SemogS3Settings | undefined => {
+  if (read('NEXT_PUBLIC_UPLOAD_TRANSPORT') !== 's3') {
+    return undefined;
+  }
+  const bucket = read('NEXT_PRIVATE_UPLOAD_BUCKET');
+  if (!bucket) {
+    throw new Error('Semog object storage requires NEXT_PRIVATE_UPLOAD_BUCKET.');
+  }
+  const accessKeyId = read('NEXT_PRIVATE_UPLOAD_ACCESS_KEY_ID');
+  const secretAccessKey = read('NEXT_PRIVATE_UPLOAD_SECRET_ACCESS_KEY');
+  return {
+    bucket,
+    endpoint: read('NEXT_PRIVATE_UPLOAD_ENDPOINT') || undefined,
+    region: read('NEXT_PRIVATE_UPLOAD_REGION') || undefined,
+    forcePathStyle: read('NEXT_PRIVATE_UPLOAD_FORCE_PATH_STYLE') === 'true',
+    credentials: accessKeyId && secretAccessKey ? { accessKeyId, secretAccessKey } : undefined,
   };
 };
