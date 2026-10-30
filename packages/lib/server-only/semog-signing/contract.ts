@@ -29,6 +29,15 @@ const auth = (accessKey: string, actionKey: string) =>
     .strict()
     .nullable();
 
+const envelopeItem = z.object({
+  id,
+  envelopeId: id,
+  title: z.string(),
+  order: z.number().int().nonnegative(),
+  documentDataId: id,
+  documentData: z.object({ id }),
+});
+
 export const ZSemogEnvelopeSnapshotSource = z.object({
   id,
   teamId: integer,
@@ -54,18 +63,7 @@ export const ZSemogEnvelopeSnapshotSource = z.object({
       distributionMethod: z.enum(['EMAIL', 'NONE']),
     })
     .passthrough(),
-  envelopeItems: z
-    .array(
-      z.object({
-        id,
-        envelopeId: id,
-        title: z.string(),
-        order: z.number().int().nonnegative(),
-        documentDataId: id,
-        documentData: z.object({ id, initialData: id }),
-      }),
-    )
-    .length(1),
+  envelopeItems: z.array(envelopeItem.extend({ documentData: z.object({ id, initialData: id }) })).length(1),
   recipients: z
     .array(
       z.object({
@@ -118,3 +116,11 @@ export const ZSemogEnvelopeSnapshotSource = z.object({
 });
 
 export type SemogEnvelopeSnapshotSource = z.infer<typeof ZSemogEnvelopeSnapshotSource>;
+/**
+ * The same envelope without INITIAL_DATA itself: the signing transaction reads only the digest the database
+ * computes for it, so a 100 MiB inline PDF never crosses into the Serializable transaction.
+ */
+export const ZSemogEnvelopeStructureSource = ZSemogEnvelopeSnapshotSource.extend({
+  envelopeItems: z.array(envelopeItem).length(1),
+});
+export type SemogEnvelopeStructureSource = z.infer<typeof ZSemogEnvelopeStructureSource>;

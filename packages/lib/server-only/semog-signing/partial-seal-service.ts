@@ -18,9 +18,17 @@ import {
   readSemogPartialSealReplay,
   saveSemogPartialSeal,
 } from './partial-seal-repository';
+import type { SemogPdfStore } from './pdf-store';
+import { persistSemogDerivedPdf, recordSemogWrites } from './pdf-store';
 import { isSemogUniqueViolation, semogRefusal } from './route-refusal';
-import type { SemogSealingEnvelope } from './sealing';
-import { decorateSemogPdf, readSemogSealingEnvelope, stampSemogPartialSeal } from './sealing';
+import type { SemogPrereadOriginals, SemogSealingEnvelope } from './sealing';
+import {
+  decorateSemogPdf,
+  prereadSemogOriginals,
+  readSemogSealingEnvelope,
+  stampSemogPartialSeal,
+  takeSemogOriginal,
+} from './sealing';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
@@ -28,6 +36,7 @@ type Dependencies = {
   enabled?: boolean;
   client: SemogPrismaTransactionRunner;
   readPdf: SemogPdfReader;
+  pdfStore?: SemogPdfStore;
   signer?: Signer;
   stampFont?: Uint8Array;
   getDocumentI18n?: SemogDocumentI18n;
@@ -75,13 +84,10 @@ const renderPartialPdf = async (
   envelope: SemogSealingEnvelope,
   count: SemogPartialSealCount,
   label: string,
+  originals: SemogPrereadOriginals,
 ) => {
   const item = envelope.envelopeItems[0];
-  const pdf = await dependencies.readPdf({
-    documentDataId: item.documentData.id,
-    type: item.documentData.type,
-    data: item.documentData.initialData,
-  });
+  const pdf = takeSemogOriginal(originals, item.documentData);
   const original = await PDF.load(pdf);
   const lastPage = original.getPage(original.getPageCount() - 1);
   if (!lastPage) {
@@ -112,6 +118,7 @@ const sealPartialLocked = async (
   actor: SemogActor,
   envelopeId: string,
   input: SemogPartialSealRequest,
+  originals: SemogPrereadOriginals,
 ) => {
   const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId);
   await assertSemogPartialSealManaged(tx, actor, envelopeId);
@@ -127,14 +134,12 @@ const sealPartialLocked = async (
     envelope,
     { assinados: signed, total: signers.length },
     label,
+    originals,
   );
-  // A new DocumentData only: the envelope item keeps pointing at its own document.
+  // A new DocumentData only: the envelope item keeps pointing at its own document. Same storage as the original.
+  const document = await persistSemogDerivedPdf(dependencies.pdfStore, item.documentData.type, sealed);
   const data = await tx.documentData.create({
-    data: {
-      type: 'BYTES_64',
-      data: Buffer.from(sealed).toString('base64'),
-      initialData: item.documentData.initialData,
-    },
+    data: { type: document.type, data: document.data, initialData: item.documentData.initialData },
   });
   const hashPdf = createHash('sha256').update(sealed).digest('hex');
   await saveSemogPartialSeal(tx, actor, envelopeId, input, { documentDataId: data.id, hashPdf, assinantes: signers });
@@ -174,18 +179,26 @@ export const createSemogPartialSealService = (dependencies: Dependencies) => {
       const input = ZSemogPartialSealRequest.parse(body);
       const id = ZEnvelopeId.parse(envelopeId);
       const setup = requireSetup(dependencies);
+      const originals = await prereadSemogOriginals(dependencies.client, dependencies.readPdf, actor, id);
       for (let attempt = 0; ; attempt++) {
+        const writes = recordSemogWrites(setup.pdfStore);
         try {
-          return await dependencies.client.$transaction((tx) => sealPartialLocked(tx, setup, actor, id, input), {
-            // Read Committed on purpose: a Serializable snapshot starts at the first statement, before the
-            // envelope lock wait, and would miss a signature committed while this seal was queued behind it.
-            // Every bridge and native mutation of the envelope takes the same row lock (the executor and the
-            // guard trigger), so after the lock each statement sees a stable, current envelope. A concurrent
-            // first call for the same round waits on the lock and then reads the committed row as a replay.
-            isolationLevel: 'ReadCommitted',
-            timeout: 60000,
-            maxWait: 10000,
-          });
+          const sealed = await dependencies.client.$transaction(
+            (tx) => sealPartialLocked(tx, { ...setup, pdfStore: writes.store }, actor, id, input, originals),
+            {
+              // Read Committed on purpose: a Serializable snapshot starts at the first statement, before the
+              // envelope lock wait, and would miss a signature committed while this seal was queued behind it.
+              // Every bridge and native mutation of the envelope takes the same row lock (the executor and the
+              // guard trigger), so after the lock each statement sees a stable, current envelope. A concurrent
+              // first call for the same round waits on the lock and then reads the committed row as a replay.
+              isolationLevel: 'ReadCommitted',
+              timeout: 60000,
+              maxWait: 10000,
+            },
+          );
+          // After the commit: the round's sealed object is read back and proven by content.
+          await writes.confirm();
+          return sealed;
         } catch (error) {
           if (isSemogUniqueViolation(error)) {
             // Same key committed meanwhile by a seal of another envelope: the same answer as a reused key.
@@ -202,18 +215,23 @@ export const createSemogPartialSealService = (dependencies: Dependencies) => {
       requireEnabled();
       const round = ZSemogPartialSealRequest.shape.rodada.parse(rodada);
       const id = ZEnvelopeId.parse(envelopeId);
-      return await dependencies.client.$transaction(
+      const { seal, data } = await dependencies.client.$transaction(
         async (tx) => {
           const seal = await readSemogPartialSealDocument(tx, actor, id, round);
-          const data = await tx.documentData.findUniqueOrThrow({ where: { id: seal.documentDataId } });
-          const bytes = await dependencies.readPdf({ documentDataId: data.id, type: data.type, data: data.data });
-          if (createHash('sha256').update(bytes).digest('hex') !== seal.hashPdf) {
-            throw partialSealConflict();
-          }
-          return bytes;
+          const data = await tx.documentData.findUniqueOrThrow({
+            where: { id: seal.documentDataId },
+            select: { id: true, type: true, data: true },
+          });
+          return { seal, data };
         },
         { isolationLevel: 'Serializable', timeout: 30000 },
       );
+      // Read after the transaction: the recorded SHA-256 of the round's PDF is what proves these bytes.
+      const bytes = await dependencies.readPdf({ documentDataId: data.id, type: data.type, data: data.data });
+      if (createHash('sha256').update(bytes).digest('hex') !== seal.hashPdf) {
+        throw partialSealConflict();
+      }
+      return bytes;
     },
   };
 };

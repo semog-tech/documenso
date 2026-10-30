@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { describe, expect, it } from 'vitest';
 import { ZSemogDraftRequest } from './draft-contract';
-import { semogDraftMaximum, validateSemogDraft } from './draft-validation';
+import { semogDraftMaximum, validateSemogBinaryDraft, validateSemogDraft } from './draft-validation';
+import { canonicalSemogJson } from './snapshot';
 
 const draftFixture = async () => {
   const pdf = await PDFDocument.create();
@@ -133,5 +134,43 @@ describe('Semog draft validation', () => {
     ).toBe(false);
     await expect(validateSemogDraft(input, 5)).rejects.toMatchObject({ statusCode: 413 });
     expect(() => semogDraftMaximum(101 * 1024 * 1024)).toThrow();
+  });
+});
+
+describe('Semog draft validation — corpo binário', () => {
+  const binaryOf = async () => {
+    const legacy = await draftFixture();
+    const { pdfBase64, ...arquivo } = legacy.arquivo;
+    const bytes = Buffer.from(pdfBase64, 'base64');
+    return { legacy, bytes, metadata: { ...legacy, arquivo: { ...arquivo, tamanho: bytes.length } } };
+  };
+  it('mesmo PDF e metadados: mesmo hash de operação que o JSON legado, e o mesmo de antes da mudança', async () => {
+    const { legacy, bytes, metadata } = await binaryOf();
+    const fromJson = await validateSemogDraft(legacy, 50000);
+    const fromBinary = await validateSemogBinaryDraft(metadata, bytes, 50000);
+    expect(fromBinary.hash).toBe(fromJson.hash);
+    expect(Buffer.from(fromBinary.bytes).equals(bytes)).toBe(true);
+    // The formula drafts were stored with before this change: canonical request with the PDF reduced to name/hash/size.
+    const before = createHash('sha256')
+      .update(JSON.stringify(canonicalSemogJson({ ...legacy, arquivo: metadata.arquivo })))
+      .digest('hex');
+    expect(fromJson.hash).toBe(before);
+  });
+  it('recusa hash ou tamanho divergentes dos bytes e bytes acima do limite', async () => {
+    const { bytes, metadata } = await binaryOf();
+    await expect(
+      validateSemogBinaryDraft({ ...metadata, arquivo: { ...metadata.arquivo, sha256: 'a'.repeat(64) } }, bytes, 50000),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      validateSemogBinaryDraft(
+        { ...metadata, arquivo: { ...metadata.arquivo, tamanho: bytes.length + 1 } },
+        bytes,
+        50000,
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(validateSemogBinaryDraft(metadata, bytes, 5)).rejects.toMatchObject({ statusCode: 413 });
+    await expect(
+      validateSemogBinaryDraft({ ...metadata, arquivo: { ...metadata.arquivo, pdfBase64: 'x' } }, bytes, 50000),
+    ).rejects.toBeDefined();
   });
 });

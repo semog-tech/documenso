@@ -5,6 +5,7 @@ import type { SemogDraftResult } from './draft-contract';
 import { SEMOG_DRAFT_MAX_PDF_BYTES } from './draft-contract';
 import type { SemogDraftStructure } from './draft-structure';
 import { hashSemogDraftStructure } from './draft-structure';
+import { semogPdfKeyFor } from './pdf-store';
 import type { SemogActor } from './service';
 
 const pdfHash = (base64: string) => {
@@ -21,7 +22,7 @@ const pdfHash = (base64: string) => {
   }
   return createHash('sha256').update(bytes).digest('hex');
 };
-const validateIds = (envelope: SemogDraftStructure, draft: SemogDraftResult) => {
+const validateIds = (envelope: SemogDraftStructure, draft: SemogDraftResult, verifiedKey: string | null) => {
   const ids = (values: number[]) => [...values].sort((a, b) => a - b).join(',');
   if (
     envelope.envelopeItems.length !== 1 ||
@@ -31,15 +32,23 @@ const validateIds = (envelope: SemogDraftStructure, draft: SemogDraftResult) => 
   ) {
     throw activationConflict();
   }
-  const data = envelope.envelopeItems[0].documentData;
-  if (
-    data.type !== 'BYTES_64' ||
-    pdfHash(data.data) !== draft.documento.sha256 ||
-    pdfHash(data.initialData) !== draft.documento.sha256
-  ) {
+  if (!semogDraftDocumentMatches(envelope.envelopeItems[0].documentData, draft.documento.sha256, verifiedKey)) {
     throw activationConflict();
   }
 };
+/**
+ * Inline drafts keep the original proof (the Base64 decodes to the drafted SHA-256). Object-stored drafts must name
+ * the drafted content address AND that very key must have been read back by content before this transaction
+ * (`verifiedKey`, see prepareSemogActivationDocument): a key alone proves nothing about the bucket.
+ */
+export const semogDraftDocumentMatches = (
+  data: SemogDraftStructure['envelopeItems'][number]['documentData'],
+  sha256: string,
+  verifiedKey: string | null,
+) =>
+  data.type === 'S3_PATH'
+    ? data.data === semogPdfKeyFor(sha256) && data.initialData === data.data && verifiedKey === data.data
+    : data.type === 'BYTES_64' && pdfHash(data.data) === sha256 && pdfHash(data.initialData) === sha256;
 const validateProgress = (envelope: SemogDraftStructure, input: SemogActivationRequest, replay: boolean) => {
   const expiry = new Date(input.expiraEm).getTime();
   if (
@@ -77,6 +86,8 @@ export const validateSemogActivationEnvelope = (input: {
   draft: SemogDraftResult;
   structureHash: string;
   replay: boolean;
+  /** Object key whose bytes were read and proven against it before the transaction; null when inline. */
+  verifiedKey: string | null;
 }) => {
   const { envelope, actor, request, draft, structureHash, replay } = input;
   if (
@@ -91,6 +102,6 @@ export const validateSemogActivationEnvelope = (input: {
   ) {
     throw activationConflict();
   }
-  validateIds(envelope, draft);
+  validateIds(envelope, draft, input.verifiedKey);
   validateProgress(envelope, request, replay);
 };

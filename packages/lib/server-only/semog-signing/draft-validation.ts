@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { AppErrorCode } from '../../errors/app-error';
-import { SEMOG_DRAFT_MAX_PDF_BYTES, type SemogDraftRequest, ZSemogDraftRequest } from './draft-contract';
+import {
+  SEMOG_DRAFT_MAX_PDF_BYTES,
+  type SemogDraftInput,
+  type SemogDraftRequest,
+  ZSemogDraftMetadata,
+  ZSemogDraftRequest,
+} from './draft-contract';
 import { semogError } from './service-validation';
 import { canonicalSemogJson } from './snapshot';
 
@@ -29,9 +35,8 @@ const decodePdf = (input: SemogDraftRequest, maximum: number) => {
   }
   return bytes;
 };
-export const validateSemogDraft = async (body: unknown, maximum: number) => {
-  const input = ZSemogDraftRequest.parse(body);
-  const bytes = decodePdf(input, semogDraftMaximum(maximum));
+/** Shared by both body formats: real PDF, fields inside its pages, and the request hash that drives idempotency. */
+const finishDraft = async (input: SemogDraftInput, bytes: Uint8Array) => {
   try {
     const pdf = await PDFDocument.load(bytes);
     const count = pdf.getPageCount();
@@ -41,13 +46,29 @@ export const validateSemogDraft = async (body: unknown, maximum: number) => {
   } catch {
     throw semogError(AppErrorCode.INVALID_BODY, 400);
   }
-  // Canonical Base64 was verified above: hash + byte length bind the exact bytes without another 138 MiB JSON copy.
-  const request = {
-    ...input,
-    arquivo: { nome: input.arquivo.nome, sha256: input.arquivo.sha256, tamanho: bytes.length },
-  };
+  // Hash + byte length bind the exact bytes: a JSON and a binary body for the same PDF are the same operation.
   const hash = createHash('sha256')
-    .update(JSON.stringify(canonicalSemogJson(request)))
+    .update(JSON.stringify(canonicalSemogJson(input)))
     .digest('hex');
-  return { input, hash };
+  return { input, hash, bytes };
+};
+export const validateSemogDraft = async (body: unknown, maximum: number) => {
+  const parsed = ZSemogDraftRequest.parse(body);
+  const bytes = decodePdf(parsed, semogDraftMaximum(maximum));
+  const { pdfBase64: _inline, ...arquivo } = parsed.arquivo;
+  return await finishDraft({ ...parsed, arquivo: { ...arquivo, tamanho: bytes.length } }, bytes);
+};
+/** Binary body: `metadados` declares SHA-256 and size; the `arquivo` part must be exactly those bytes. */
+export const validateSemogBinaryDraft = async (metadata: unknown, bytes: Uint8Array, maximum: number) => {
+  const input = ZSemogDraftMetadata.parse(metadata);
+  if (input.arquivo.tamanho > semogDraftMaximum(maximum) || bytes.byteLength > maximum) {
+    throw semogError(AppErrorCode.LIMIT_EXCEEDED, 413);
+  }
+  if (
+    bytes.byteLength !== input.arquivo.tamanho ||
+    createHash('sha256').update(bytes).digest('hex') !== input.arquivo.sha256
+  ) {
+    throw semogError(AppErrorCode.INVALID_BODY, 400);
+  }
+  return await finishDraft(input, bytes);
 };

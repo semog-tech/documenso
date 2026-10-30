@@ -12,12 +12,16 @@ import {
 import { validateSemogActivationEnvelope } from './activation-validation';
 import { readSemogDraftStructure } from './draft-structure';
 import type { SemogPrismaTransactionRunner } from './execution';
+import { readSemogOutside } from './execution-observed';
+import type { SemogPdfStore } from './pdf-store';
+import { readSemogStoredPdf } from './pdf-store';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
 
 type Dependencies = {
   enabled?: boolean;
   client: SemogPrismaTransactionRunner;
+  pdfStore?: SemogPdfStore;
   authenticate(token: string): Promise<SemogActor | null>;
   now?: () => Date;
 };
@@ -31,12 +35,33 @@ const validateActor = async (tx: Prisma.TransactionClient, actor: SemogActor) =>
     throw semogError(AppErrorCode.UNAUTHORIZED, 401);
   }
 };
+/**
+ * Before the transaction (no lock held during the download): an object-stored draft is read back once and proven
+ * against its content address. Returns the proven key; the transaction only accepts that exact key.
+ */
+const prepareSemogActivationDocument = async (dependencies: Dependencies, actor: SemogActor, envelopeId: string) => {
+  const data = await readSemogOutside(dependencies.client, (tx) =>
+    tx.documentData.findFirst({
+      where: { envelopeItem: { envelopeId, envelope: { teamId: actor.teamId } } },
+      select: { type: true, data: true },
+    }),
+  );
+  if (data?.type !== 'S3_PATH') {
+    return null;
+  }
+  if (!dependencies.pdfStore) {
+    throw semogError(AppErrorCode.NOT_SETUP, 503);
+  }
+  await readSemogStoredPdf(dependencies.pdfStore, data.data);
+  return data.data;
+};
 const activateTransaction = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
   input: SemogActivationRequest,
-  now: () => Date,
+  context: { now: () => Date; verifiedKey: string | null },
 ) => {
+  const { now } = context;
   await validateActor(tx, actor);
   await lockSemogActivation(tx, input);
   const draft = await readSemogActivationDraft(tx, actor, input);
@@ -53,6 +78,7 @@ const activateTransaction = async (
     draft: draft.result,
     structureHash: draft.structureHash,
     replay: replay !== null,
+    verifiedKey: context.verifiedKey,
   });
   if (replay) {
     return replay;
@@ -105,8 +131,10 @@ export const createSemogActivationService = (dependencies: Dependencies) => {
     activate: async (actor: SemogActor, body: unknown) => {
       requireEnabled();
       const input = ZSemogActivationRequest.parse(body);
+      const verifiedKey = await prepareSemogActivationDocument(dependencies, actor, input.envelopeId);
+      const now = dependencies.now ?? (() => new Date());
       return await dependencies.client.$transaction(
-        (tx) => activateTransaction(tx, actor, input, dependencies.now ?? (() => new Date())),
+        (tx) => activateTransaction(tx, actor, input, { now, verifiedKey }),
         { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: 60000, maxWait: 10000 },
       );
     },
