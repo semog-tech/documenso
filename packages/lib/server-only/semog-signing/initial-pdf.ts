@@ -3,6 +3,7 @@ import { DocumentDataType } from '@prisma/client';
 import { base64 } from '@scure/base';
 
 import { AppError, AppErrorCode } from '../../errors/app-error';
+import { decodeSemogBase64 } from './base64';
 import type { SemogEnvelopeStructureSource } from './contract';
 import { SEMOG_DRAFT_MAX_PDF_BYTES } from './draft-contract';
 import type { SemogPdfStore } from './pdf-store';
@@ -10,7 +11,7 @@ import { readSemogStoredPdf } from './pdf-store';
 
 export type SemogPdfSource = { documentDataId: string; type: DocumentDataType; data: string };
 export type SemogPdfReader = (input: SemogPdfSource) => Promise<Uint8Array>;
-/** Object storage is injected explicitly; inline formats use the native get-file.server codec. */
+/** Object storage is injected explicitly; inline Base64 is decoded natively and checked for canonical encoding. */
 export const createSemogPdfReader =
   (store?: SemogPdfStore): SemogPdfReader =>
   async (source) => {
@@ -18,7 +19,17 @@ export const createSemogPdfReader =
       return new TextEncoder().encode(source.data);
     }
     if (source.type === DocumentDataType.BYTES_64) {
-      return base64.decode(source.data);
+      return decodeSemogBase64(source.data, {
+        maximum: SEMOG_MAX_SEALED_PDF_BYTES,
+        allowEmpty: true,
+        reject: (reason) => {
+          if (reason === 'invalid') {
+            // Preserve the existing codec's errors without running its slow decoder on valid PDFs.
+            base64.decode(source.data);
+          }
+          throw new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 400 });
+        },
+      });
     }
     if (!store) {
       throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
