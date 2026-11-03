@@ -110,6 +110,24 @@ describe('Semog draft validation', () => {
       ),
     ).rejects.toBeDefined();
   });
+  it('preserves the error codes for encoded limits, decoded limits and malformed Base64', async () => {
+    const input = await draftFixture();
+    const withBase64 = (pdfBase64: string) => ({ ...input, arquivo: { ...input.arquivo, pdfBase64 } });
+    await expect(validateSemogDraft(withBase64('YWJjZA=='), 3)).rejects.toMatchObject({
+      code: 'LIMIT_EXCEEDED',
+      statusCode: 413,
+    });
+    await expect(validateSemogDraft(withBase64('YWI='), 1)).rejects.toMatchObject({
+      code: 'INVALID_BODY',
+      statusCode: 400,
+    });
+    for (const encoded of ['YR==', 'YWJ=', 'YQ', '____', 'YQ==\n']) {
+      await expect(validateSemogDraft(withBase64(encoded), 50000)).rejects.toMatchObject({
+        code: 'INVALID_BODY',
+        statusCode: 400,
+      });
+    }
+  });
   it('rejects absent PDF page, overflow, repeated references and wrong version', async () => {
     const input = await draftFixture();
     input.signatarios[0].campos[0].pagina = 2;

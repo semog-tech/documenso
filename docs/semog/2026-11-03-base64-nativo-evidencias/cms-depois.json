@@ -1,0 +1,14 @@
+[
+  {
+    "size": "pequeno",
+    "exitCode": 0,
+    "message": "Verification successful",
+    "byteRangeCoversFinalBinary": true
+  },
+  {
+    "size": "grande",
+    "exitCode": 0,
+    "message": "Verification successful",
+    "byteRangeCoversFinalBinary": true
+  }
+]

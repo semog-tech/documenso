@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { AppErrorCode } from '../../errors/app-error';
+import { decodeSemogBase64 } from './base64';
 import {
   SEMOG_DRAFT_MAX_PDF_BYTES,
   type SemogDraftInput,
@@ -18,19 +19,16 @@ export const semogDraftMaximum = (maximum = SEMOG_DRAFT_MAX_PDF_BYTES) => {
   return maximum;
 };
 const decodePdf = (input: SemogDraftRequest, maximum: number) => {
-  const encoded = input.arquivo.pdfBase64;
-  if (encoded.length > 4 * Math.ceil(maximum / 3)) {
-    throw semogError(AppErrorCode.LIMIT_EXCEEDED, 413);
-  }
-  if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
-    throw semogError(AppErrorCode.INVALID_BODY, 400);
-  }
-  const bytes = Buffer.from(encoded, 'base64');
-  if (
-    bytes.length > maximum ||
-    bytes.toString('base64') !== encoded ||
-    createHash('sha256').update(bytes).digest('hex') !== input.arquivo.sha256
-  ) {
+  const bytes = decodeSemogBase64(input.arquivo.pdfBase64, {
+    maximum,
+    reject: (reason) => {
+      if (reason === 'encoded-limit') {
+        throw semogError(AppErrorCode.LIMIT_EXCEEDED, 413);
+      }
+      throw semogError(AppErrorCode.INVALID_BODY, 400);
+    },
+  });
+  if (createHash('sha256').update(bytes).digest('hex') !== input.arquivo.sha256) {
     throw semogError(AppErrorCode.INVALID_BODY, 400);
   }
   return bytes;

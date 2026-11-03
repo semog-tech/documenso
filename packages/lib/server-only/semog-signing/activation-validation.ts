@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { SemogActivationRequest } from './activation-contract';
 import { activationConflict } from './activation-repository';
+import { decodeSemogBase64 } from './base64';
 import type { SemogDraftResult } from './draft-contract';
 import { SEMOG_DRAFT_MAX_PDF_BYTES } from './draft-contract';
 import type { SemogDraftStructure } from './draft-structure';
@@ -9,17 +10,12 @@ import { semogPdfKeyFor } from './pdf-store';
 import type { SemogActor } from './service';
 
 const pdfHash = (base64: string) => {
-  if (
-    base64.length > 4 * Math.ceil(SEMOG_DRAFT_MAX_PDF_BYTES / 3) ||
-    base64.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)
-  ) {
-    throw activationConflict();
-  }
-  const bytes = Buffer.from(base64, 'base64');
-  if (bytes.length > SEMOG_DRAFT_MAX_PDF_BYTES || bytes.toString('base64') !== base64) {
-    throw activationConflict();
-  }
+  const bytes = decodeSemogBase64(base64, {
+    maximum: SEMOG_DRAFT_MAX_PDF_BYTES,
+    reject: () => {
+      throw activationConflict();
+    },
+  });
   return createHash('sha256').update(bytes).digest('hex');
 };
 const validateIds = (envelope: SemogDraftStructure, draft: SemogDraftResult, verifiedKey: string | null) => {
