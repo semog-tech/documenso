@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { S3Client } from '@aws-sdk/client-s3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createSemogPdfDiskCache } from './pdf-disk-cache';
 import { semogPdfKeyFor } from './pdf-store';
 import { createSemogS3PdfStore, createSemogS3PurgeObjects, semogS3SettingsFromEnv } from './pdf-store-s3';
 import type { SemogStageObserver, SemogStageTiming } from './timing';
@@ -178,6 +182,7 @@ describe('Medição do transporte S3 sem dados do objeto', () => {
       'storage.s3.head',
       'storage.s3.read',
       'storage.s3.hash',
+      'storage.s3.confirm.readback',
     ]);
     expect(timings.find((timing) => timing.stage === 'storage.s3.read')).toMatchObject({
       ok: true,
@@ -219,5 +224,193 @@ describe('Medição do transporte S3 sem dados do objeto', () => {
       },
     );
     await expect(good.write(key, bytes)).resolves.toBeUndefined();
+  });
+});
+
+describe('Confirmação remota por checksum', () => {
+  const checksum = createHash('sha256').update(bytes).digest('base64');
+  it('pede checksum no HEAD e prova tamanho/hash sem GET', async () => {
+    const methods: string[] = [];
+    const stages: string[] = [];
+    const s3 = await store(
+      (request, response) => {
+        methods.push(request.method ?? '');
+        expect(request.headers['x-amz-checksum-mode']).toBe('ENABLED');
+        response.writeHead(200, { 'Content-Length': bytes.byteLength, 'x-amz-checksum-sha256': checksum }).end();
+      },
+      (timing) => stages.push(timing.stage),
+    );
+    await s3.confirm?.(key, bytes);
+    expect(methods).toEqual(['HEAD']);
+    expect(stages).toContain('storage.s3.confirm.head-checksum');
+  });
+  it('sem checksum, relê o remoto e registra o fallback', async () => {
+    const methods: string[] = [];
+    const stages: string[] = [];
+    const s3 = await store(
+      (request, response) => {
+        methods.push(request.method ?? '');
+        response.writeHead(200, { 'Content-Length': bytes.byteLength });
+        response.end(request.method === 'HEAD' ? undefined : bytes);
+      },
+      (timing) => stages.push(timing.stage),
+    );
+    await s3.confirm?.(key, bytes);
+    expect(methods).toEqual(['HEAD', 'GET']);
+    expect(stages).toContain('storage.s3.confirm.readback');
+  });
+  it.each(['checksum', 'length'])('recusa divergência de %s sem esconder com GET', async (field) => {
+    const methods: string[] = [];
+    const s3 = await store((request, response) => {
+      methods.push(request.method ?? '');
+      response
+        .writeHead(200, {
+          'Content-Length': field === 'length' ? bytes.byteLength + 1 : bytes.byteLength,
+          'x-amz-checksum-sha256': field === 'checksum' ? Buffer.alloc(32).toString('base64') : checksum,
+        })
+        .end();
+    });
+    await expect(s3.confirm?.(key, bytes)).rejects.toMatchObject({ statusCode: 409 });
+    expect(methods).toEqual(['HEAD']);
+  });
+  it('fallback recusa bytes adulterados mesmo com o tamanho esperado', async () => {
+    const s3 = await store((request, response) => {
+      response.writeHead(200, { 'Content-Length': bytes.byteLength });
+      response.end(request.method === 'HEAD' ? undefined : Buffer.alloc(bytes.byteLength));
+    });
+    await expect(s3.confirm?.(key, bytes)).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
+describe('S3 real com cache local descartável', () => {
+  const withCache = async (run: (cache: ReturnType<typeof createSemogPdfDiskCache>) => Promise<void>) => {
+    const directory = await fs.mkdtemp(join(await fs.realpath(tmpdir()), 'semog-s3-cache-'));
+    const cache = createSemogPdfDiskCache({ enabled: true, directory, minFreeBytes: 0 });
+    try {
+      await run(cache);
+    } finally {
+      cache.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  };
+  it('HEAD 501 cai para GET remoto mesmo com cache quente, na confirmação e no replay', async () => {
+    await withCache(async (cache) => {
+      await cache.write(key, bytes);
+      const seen: string[] = [];
+      const stages: string[] = [];
+      const endpoint = await fakeS3((request, response) => {
+        seen.push(request.method ?? '');
+        if (request.method === 'HEAD') {
+          response.writeHead(501).end();
+          return;
+        }
+        response.writeHead(200, { 'Content-Length': bytes.byteLength }).end(bytes);
+      });
+      const s3 = createSemogS3PdfStore(
+        {
+          bucket: 'local',
+          endpoint,
+          forcePathStyle: true,
+          credentials: { accessKeyId: 'x', secretAccessKey: 'y' },
+          cache,
+        },
+        (timing) => stages.push(timing.stage),
+      );
+      await s3.confirm?.(key, bytes);
+      await s3.write(key, bytes);
+      expect(seen).toEqual(['HEAD', 'GET', 'HEAD', 'GET']);
+      expect(stages.filter((stage) => stage === 'storage.s3.confirm.readback')).toHaveLength(2);
+    });
+  });
+  it('HEAD 403 preserva erro sem tentar GET na confirmação e no replay', async () => {
+    const seen: string[] = [];
+    const s3 = await store((request, response) => {
+      seen.push(request.method ?? '');
+      response.writeHead(403).end();
+    });
+    await expect(s3.confirm?.(key, bytes)).rejects.toBeDefined();
+    await expect(s3.write(key, bytes)).rejects.toBeDefined();
+    expect(seen).toEqual(['HEAD', 'HEAD']);
+  });
+  it('PUT íntegro semeia cache; confirmação sem checksum ignora o cache quente', async () => {
+    await withCache(async (cache) => {
+      const seen: string[] = [];
+      let stored = false;
+      const endpoint = await fakeS3((request, response) => {
+        seen.push(request.method ?? '');
+        request.resume();
+        request.on('end', () => {
+          if (request.method === 'HEAD') {
+            response.writeHead(stored ? 200 : 404, { 'Content-Length': bytes.byteLength }).end();
+            return;
+          }
+          if (request.method === 'PUT') {
+            stored = true;
+            response.writeHead(200).end();
+            return;
+          }
+          response.writeHead(200, { 'Content-Length': bytes.byteLength }).end(bytes);
+        });
+      });
+      const s3 = createSemogS3PdfStore({
+        bucket: 'local',
+        endpoint,
+        forcePathStyle: true,
+        credentials: { accessKeyId: 'x', secretAccessKey: 'y' },
+        cache,
+      });
+      await s3.write(key, bytes);
+      expect(await s3.read(key)).toEqual(bytes);
+      expect(seen).toEqual(['HEAD', 'PUT']);
+      await s3.confirm?.(key, bytes);
+      expect(seen).toEqual(['HEAD', 'PUT', 'HEAD', 'GET']);
+    });
+  });
+  it('PUT falho não semeia cache', async () => {
+    await withCache(async (cache) => {
+      const write = vi.spyOn(cache, 'write');
+      const endpoint = await fakeS3((request, response) => {
+        request.resume();
+        request.on('end', () => response.writeHead(request.method === 'HEAD' ? 404 : 403).end());
+      });
+      const s3 = createSemogS3PdfStore({
+        bucket: 'local',
+        endpoint,
+        forcePathStyle: true,
+        credentials: { accessKeyId: 'x', secretAccessKey: 'y' },
+        cache,
+      });
+      await expect(s3.write(key, bytes)).rejects.toMatchObject({ statusCode: 409 });
+      expect(write).not.toHaveBeenCalled();
+    });
+  });
+  it('replay usa HEAD com checksum sem GET nem PUT', async () => {
+    const seen: string[] = [];
+    const s3 = await store((request, response) => {
+      seen.push(request.method ?? '');
+      response
+        .writeHead(200, {
+          'Content-Length': bytes.byteLength,
+          'x-amz-checksum-sha256': createHash('sha256').update(bytes).digest('base64'),
+        })
+        .end();
+    });
+    await s3.write(key, bytes);
+    expect(seen).toEqual(['HEAD']);
+  });
+  it('GETs brutos simultâneos coalescem sem compartilhar buffer', async () => {
+    let reads = 0;
+    const s3 = await store((request, response) => {
+      if (request.method === 'HEAD') {
+        response.writeHead(200, { 'Content-Length': bytes.byteLength }).end();
+        return;
+      }
+      reads++;
+      setTimeout(() => response.writeHead(200, { 'Content-Length': bytes.byteLength }).end(bytes), 30);
+    });
+    const [first, second] = await Promise.all([s3.read(key), s3.read(key), s3.confirm?.(key, bytes)]);
+    expect(reads).toBe(1);
+    first[0] = 0;
+    expect(second[0]).toBe(bytes[0]);
   });
 });

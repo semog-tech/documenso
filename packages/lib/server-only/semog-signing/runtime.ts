@@ -18,6 +18,7 @@ import { createSemogOutboxWorker } from './outbox';
 import { createSemogPartialSealHandler } from './partial-seal-http';
 import { createSemogPartialSealService } from './partial-seal-service';
 import type { SemogPdfStore } from './pdf-store';
+import { semogPdfKeyFor } from './pdf-store';
 import { createSemogSigningPostgresClient, createSemogSigningRepository } from './repository';
 import { createSemogPrismaSealer } from './sealing';
 import { createSemogSigningService } from './service';
@@ -52,7 +53,14 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
       },
     }),
   );
-  const executor = createSemogPrismaExecutor({ enabled, client, readPdf, observe, externalEffects });
+  const executor = createSemogPrismaExecutor({
+    enabled,
+    client,
+    readPdf,
+    observe,
+    externalEffects,
+    onSealedPdfRead: async (hashOriginal) => pdfStore?.invalidateCache?.(semogPdfKeyFor(hashOriginal)),
+  });
   const service = createSemogSigningService({
     enabled,
     repository,

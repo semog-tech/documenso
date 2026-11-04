@@ -133,7 +133,12 @@ const answerOperation = (state: State, text: string, statement: Prisma.Sql) => {
  * INITIAL_DATA selected there all throw.
  */
 export const executionFixture = async (
-  options: { fieldPage?: number; observe?: SemogStageObserver; storage?: Storage } = {},
+  options: {
+    fieldPage?: number;
+    observe?: SemogStageObserver;
+    storage?: Storage;
+    onSealedPdfRead?: (hashOriginal: string) => Promise<void>;
+  } = {},
 ) => {
   const { base, pdf, objects, state } = await createState(options);
   const source = () => ({
@@ -260,7 +265,13 @@ export const executionFixture = async (
       return Promise.resolve(state.operation);
     },
   };
-  const executor = createSemogPrismaExecutor({ enabled: true, client, readPdf, observe: options.observe });
+  const executor = createSemogPrismaExecutor({
+    enabled: true,
+    client,
+    readPdf,
+    observe: options.observe,
+    onSealedPdfRead: options.onSealedPdfRead,
+  });
   const readCurrent = vi.fn(async () => ({
     envelope: findEnvelope({
       where: {},

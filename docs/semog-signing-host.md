@@ -193,6 +193,16 @@ indisponibilidade e objeto adulterado são detectados no download. A migração
 autorizada de Base64 para S3 preserva a validade dos recibos. Detalhes e ensaio:
 [ponte com leitura única](semog/2026-11-04-ponte-leitura-unica.md).
 
+O host S3 aceita cache local opt-in (`SEMOG_PDF_CACHE_ENABLED=true`), com hash
+conferido a cada hit, limite total padrão de 3 GB, inatividade de 72 h, reserva
+mínima de 5 GB livres e remoção do original depois do download final validado.
+Erros de cache caem para R2. As confirmações de gravação consultam o HEAD remoto
+com checksum SHA-256 e tamanho; sem checksum, fazem GET remoto integral,
+independentemente do cache. Isso atesta os metadados mantidos pelo armazenamento,
+em vez de repetir a leitura do corpo quando o checksum está disponível.
+Configuração do volume, garantias, limites e ensaio:
+[PDF sem releitura redundante](semog/2026-11-04-pdf-sem-releitura.md).
+
 O consumo usa lease de 120 segundos, confirmação após commit e até oito
 tentativas duráveis. Falha é reportada no log sem corpo, token ou CPF. O loop não
 sobrepõe chamadas. SIGTERM/SIGINT fecham o HTTP e aguardam a chamada em andamento;

@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { createSemogActivationService } from './activation-service';
 import { semogDraftDocumentMatches } from './activation-validation';
+import { createSemogPdfDiskCache } from './pdf-disk-cache';
 import type { SemogPdfStore } from './pdf-store';
 import { readSemogStoredPdf, semogPdfKeyFor } from './pdf-store';
 
@@ -73,6 +77,48 @@ describe('Ativação de rascunho no armazenamento de objetos', () => {
       statusCode: 409,
     });
     expect(tampered.transactions).toHaveLength(1);
+  });
+  it('confere presença remota mesmo com bytes íntegros no cache e recusa HEAD ausente ou falho', async () => {
+    const missing = service(new Map([[key, pdf]]));
+    missing.store.exists = vi.fn(() => Promise.resolve(false));
+    await expect(missing.activation.activate({ teamId: 1, userId: 1 }, missing.body)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(missing.store.read).toHaveBeenCalledWith(key);
+    expect(missing.store.exists).toHaveBeenCalledExactlyOnceWith(key);
+    expect(missing.transactions).toHaveLength(1);
+
+    const failed = service(new Map([[key, pdf]]));
+    const error = new Error('HEAD indisponível');
+    failed.store.exists = vi.fn(() => Promise.reject(error));
+    await expect(failed.activation.activate({ teamId: 1, userId: 1 }, failed.body)).rejects.toBe(error);
+    expect(failed.transactions).toHaveLength(1);
+
+    const present = service(new Map([[key, pdf]]));
+    present.store.exists = vi.fn(() => Promise.resolve(true));
+    await expect(present.activation.activate({ teamId: 1, userId: 1 }, present.body)).rejects.toThrow('alcançada');
+    expect(present.store.exists).toHaveBeenCalledExactlyOnceWith(key);
+    expect(present.transactions).toHaveLength(2);
+  });
+  it('um hit real no disco não autoriza ativar um objeto removido do R2', async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), 'semog-activation-cache-')));
+    const cache = createSemogPdfDiskCache({ enabled: true, directory, minFreeBytes: 0 });
+    try {
+      await cache.write(key, pdf);
+      const fixture = service(new Map());
+      const remoteRead = fixture.store.read;
+      fixture.store.read = (name) => cache.read(name, () => remoteRead(name));
+      fixture.store.exists = vi.fn(() => Promise.resolve(false));
+      await expect(fixture.activation.activate({ teamId: 1, userId: 1 }, fixture.body)).rejects.toMatchObject({
+        statusCode: 503,
+      });
+      expect(remoteRead).not.toHaveBeenCalled();
+      expect(fixture.store.exists).toHaveBeenCalledExactlyOnceWith(key);
+      expect(fixture.transactions).toHaveLength(1);
+    } finally {
+      cache.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

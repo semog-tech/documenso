@@ -9,6 +9,7 @@ import {
 
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { SEMOG_MAX_SEALED_PDF_BYTES } from './initial-pdf';
+import type { SemogPdfDiskCache } from './pdf-disk-cache';
 import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyHash } from './pdf-store';
 import type { SemogPurgeObjects } from './storage-purge';
@@ -23,6 +24,7 @@ export type SemogS3Settings = {
   forcePathStyle?: boolean;
   credentials?: { accessKeyId: string; secretAccessKey: string };
   timeouts?: Partial<SemogS3Timeouts>;
+  cache?: SemogPdfDiskCache;
 };
 /**
  * The SDK default for each is 0 (wait forever). What @smithy/node-http-handler 4.4.12 really enforces:
@@ -40,6 +42,18 @@ const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes);
 const failure = (message: string) => new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 409, message });
 const isMissing = (error: unknown) =>
   error instanceof Error && (error.name === 'NotFound' || error.name === 'NoSuchKey');
+const isChecksumModeUnsupported = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const metadata = '$metadata' in error ? error.$metadata : undefined;
+  const status =
+    metadata && typeof metadata === 'object' && 'httpStatusCode' in metadata ? metadata.httpStatusCode : undefined;
+  if (status === 403 || status === 404) {
+    return false;
+  }
+  return status === 501 || error.name === 'NotImplemented' || error.name === 'NotSupported';
+};
 
 /**
  * Same client configuration as the native S3Provider, including its checksum settings for S3-compatible
@@ -64,7 +78,8 @@ const connect = (settings: SemogS3Settings) => {
 };
 export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: SemogStageObserver): SemogPdfStore => {
   const { client, timeouts } = connect(settings);
-  const read = (key: string, abortSignal: AbortSignal) =>
+  const remoteReads = new Map<string, Promise<Uint8Array>>();
+  const fetchRemote = (key: string, abortSignal: AbortSignal) =>
     timeSemogStage(
       observe,
       'storage.s3.read',
@@ -73,10 +88,30 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: Semog
         if (!object.Body || (object.ContentLength ?? 0) > SEMOG_MAX_SEALED_PDF_BYTES) {
           throw failure('Objeto ausente ou acima do teto do PDF selado.');
         }
-        return await object.Body.transformToByteArray();
+        const bytes = await object.Body.transformToByteArray();
+        return bytes;
       },
       (bytes) => ({ bytes: bytes.byteLength }),
     );
+  const read = async (key: string, abortSignal: AbortSignal, populateCache = true) => {
+    let pending = remoteReads.get(key);
+    if (!pending) {
+      // The first caller owns the bounded remote deadline; later callers cannot cancel its peers.
+      pending = fetchRemote(key, abortSignal);
+      remoteReads.set(key, pending);
+    }
+    try {
+      const bytes = await pending;
+      if (populateCache) {
+        await settings.cache?.write(key, bytes);
+      }
+      return Uint8Array.from(bytes);
+    } finally {
+      if (remoteReads.get(key) === pending) {
+        remoteReads.delete(key);
+      }
+    }
+  };
   const exists = async (key: string, abortSignal: AbortSignal) => {
     try {
       await timeSemogStage(observe, 'storage.s3.head', () =>
@@ -86,6 +121,20 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: Semog
     } catch (error) {
       if (isMissing(error)) {
         return false;
+      }
+      throw error;
+    }
+  };
+  const checksumHead = async (key: string, abortSignal: AbortSignal) => {
+    try {
+      return await timeSemogStage(observe, 'storage.s3.head', () =>
+        client.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: key, ChecksumMode: 'ENABLED' }), {
+          abortSignal,
+        }),
+      );
+    } catch (error) {
+      if (isChecksumModeUnsupported(error)) {
+        return undefined;
       }
       throw error;
     }
@@ -101,11 +150,22 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: Semog
       }),
       (result) => ({ bytes: result.bytes }),
     );
-  const alreadyStored = async (key: string, expected: string, abortSignal: AbortSignal) => {
-    if (!(await exists(key, abortSignal))) {
-      return false;
+  const alreadyStored = async (key: string, expected: string, size: number, abortSignal: AbortSignal) => {
+    try {
+      const head = await checksumHead(key, abortSignal);
+      if (head?.ChecksumSHA256) {
+        return head.ContentLength === size && head.ChecksumSHA256 === Buffer.from(expected, 'hex').toString('base64');
+      }
+      return await timeSemogStage(observe, 'storage.s3.confirm.readback', async () => {
+        const remote = await read(key, abortSignal);
+        return remote.byteLength === size && (await hashBytes(remote)).hash === expected;
+      });
+    } catch (error) {
+      if (isMissing(error)) {
+        return false;
+      }
+      throw error;
     }
-    return (await hashBytes(await read(key, abortSignal))).hash === expected;
   };
   const put = async (key: string, bytes: Uint8Array, abortSignal: AbortSignal) => {
     try {
@@ -145,8 +205,39 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: Semog
       });
     }
   };
+  const confirm = async (key: string, bytes: Uint8Array) => {
+    const expected = semogPdfKeyHash(key);
+    if (expected === null || sha256(bytes).digest('hex') !== expected) {
+      throw failure('Chave do PDF não corresponde aos bytes.');
+    }
+    const abortSignal = AbortSignal.timeout(timeouts.operationMs);
+    const head = await checksumHead(key, abortSignal);
+    if (head?.ChecksumSHA256) {
+      await timeSemogStage(observe, 'storage.s3.confirm.head-checksum', () => {
+        if (
+          head.ChecksumSHA256 !== Buffer.from(expected, 'hex').toString('base64') ||
+          head.ContentLength !== bytes.byteLength
+        ) {
+          throw failure('Checksum ou tamanho remoto do PDF divergente.');
+        }
+      });
+      return;
+    }
+    // Must bypass every local cache: only remote bytes can prove the fallback's persistence guarantee.
+    await timeSemogStage(observe, 'storage.s3.confirm.readback', async () => {
+      const remote = await read(key, abortSignal);
+      if (remote.byteLength !== bytes.byteLength || sha256(remote).digest('hex') !== expected) {
+        throw failure('Conteúdo remoto do PDF divergente.');
+      }
+    });
+  };
   return {
-    read: (key) => read(key, AbortSignal.timeout(timeouts.operationMs)),
+    confirm,
+    invalidateCache: settings.cache?.invalidate,
+    read: (key) => {
+      const load = () => read(key, AbortSignal.timeout(timeouts.operationMs), false);
+      return settings.cache ? settings.cache.read(key, load) : load();
+    },
     exists: (key) => exists(key, AbortSignal.timeout(timeouts.operationMs)),
     write: async (key, bytes) => {
       const expected = semogPdfKeyHash(key);
@@ -155,10 +246,11 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: Semog
       }
       // One deadline for the whole write: HEAD, the GET of an existing object and the PUT share it.
       const deadline = AbortSignal.timeout(timeouts.operationMs);
-      if (await alreadyStored(key, expected, deadline)) {
+      if (await alreadyStored(key, expected, bytes.byteLength, deadline)) {
         return;
       }
       await put(key, bytes, deadline);
+      await settings.cache?.write(key, bytes);
     },
   };
 };

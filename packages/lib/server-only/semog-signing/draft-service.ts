@@ -32,8 +32,10 @@ export const createSemogDraftService = (dependencies: Dependencies) => {
   const observe = dependencies.observe;
   const store = dependencies.pdfStore;
   const exists = store?.exists;
+  const confirm = store?.confirm;
   // Preserve method receivers and HEAD availability; these stages include the store's own integrity work.
   const measuredStore: SemogPdfStore | undefined = store && {
+    ...(confirm ? { confirm: (key: string, bytes: Uint8Array) => confirm.call(store, key, bytes) } : {}),
     write: (key, bytes) =>
       timeSemogStage(
         observe,

@@ -8,6 +8,7 @@ import {
   ensureSemogStoredPdf,
   persistSemogDerivedPdf,
   readSemogStoredPdf,
+  recordSemogWrites,
   SEMOG_STORAGE_ENSURE_FAILED,
   semogPdfKeyFor,
 } from './pdf-store';
@@ -139,6 +140,34 @@ describe('Rascunho com armazenamento de objetos', () => {
 });
 
 describe('Reconferência depois do commit', () => {
+  it('selagem usa confirmação remota, regrava divergência e reconfirma os bytes gravados', async () => {
+    const { store } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    const invalid = new Error('checksum remoto divergente');
+    const confirm = vi
+      .fn<(key: string, bytes: Uint8Array) => Promise<void>>()
+      .mockRejectedValueOnce(invalid)
+      .mockResolvedValue(undefined);
+    const recorded = recordSemogWrites({ ...store, confirm });
+    await recorded.store?.write(key, bytes);
+    await recorded.confirm();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenNthCalledWith(1, key, bytes);
+    expect(confirm).toHaveBeenNthCalledWith(2, key, bytes);
+    expect(store.write).toHaveBeenCalledTimes(2);
+    expect(store.read).not.toHaveBeenCalled();
+  });
+  it('selagem sem confirmação remota mantém a releitura completa e repara conteúdo adulterado', async () => {
+    const { store, objects } = memoryStore();
+    const key = semogPdfKeyFor(sha256(bytes));
+    const recorded = recordSemogWrites(store);
+    await recorded.store?.write(key, bytes);
+    objects.set(key, new Uint8Array(bytes.byteLength));
+    await recorded.confirm();
+    expect(store.read).toHaveBeenCalledTimes(2);
+    expect(store.write).toHaveBeenCalledTimes(2);
+    expect(objects.get(key)).toEqual(bytes);
+  });
   it('com HEAD: presente não regrava; ausente regrava e prova pelo conteúdo', async () => {
     const { objects, store } = memoryStore();
     const key = semogPdfKeyFor(sha256(bytes));

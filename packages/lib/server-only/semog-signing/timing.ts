@@ -5,6 +5,8 @@ export type SemogStage =
   | 'storage.s3.read'
   | 'storage.s3.hash'
   | 'storage.s3.checksum'
+  | 'storage.s3.confirm.head-checksum'
+  | 'storage.s3.confirm.readback'
   | 'draft.total'
   | 'draft.authenticate'
   | 'draft.body'
