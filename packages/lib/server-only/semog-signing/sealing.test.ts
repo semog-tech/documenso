@@ -15,6 +15,7 @@ import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyFor } from './pdf-store';
 import { createSemogS3PdfStore } from './pdf-store-s3';
 import { createSemogPrismaSealer } from './sealing';
+import type { SemogStageObserver, SemogStageTiming } from './timing';
 
 type Fixture = Awaited<ReturnType<typeof createSemogPartialSealFixture>>;
 const pageTexts = async (bytes: Uint8Array) => {
@@ -49,9 +50,10 @@ const signEveryone = (fixture: Fixture) => {
     });
   }
 };
-const seal = async (fixture: Fixture) => {
+const seal = async (fixture: Fixture, observe?: SemogStageObserver) => {
   const sealer = createSemogPrismaSealer({
     enabled: true,
+    observe,
     client: fixture.store.client,
     readPdf: createSemogPdfReader(),
     signer: fixture.signer,
@@ -74,7 +76,36 @@ describe('Semog native seal through decorateSemogPdf', () => {
   it('completes: every field, no stamp, native reason, envelope COMPLETED with a new document', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
     signEveryone(fixture);
-    const { result, bytes } = await seal(fixture);
+    const timings: SemogStageTiming[] = [];
+    const { result, bytes } = await seal(fixture, (timing) => timings.push(timing));
+    expect(timings.map((timing) => timing.stage)).toEqual([
+      'seal.source',
+      'seal.read',
+      'seal.preread',
+      'seal.lock',
+      'seal.envelope',
+      'seal.audit',
+      'seal.original-load',
+      'seal.render',
+      'seal.pdf-load',
+      'seal.decorate',
+      'seal.pdf-save',
+      'seal.normalize',
+      'seal.signer',
+      'seal.sign',
+      'seal.storage',
+      'seal.document-write',
+      'seal.receipt-write',
+      'seal.complete',
+      'seal.transaction',
+      'seal.confirm',
+      'seal.total',
+    ]);
+    for (const timing of timings) {
+      expect(Object.keys(timing).sort()).toEqual(['ms', 'ok', 'stage']);
+      expect(timing.ok).toBe(true);
+      expect(timing.ms).toBeGreaterThanOrEqual(0);
+    }
     expect(result).toEqual({ envelopeId: 'env_partial', documentoConcluido: true });
     const texts = await pageTexts(bytes);
     for (const id of [1, 2, 3, 4, 5]) {
@@ -89,6 +120,22 @@ describe('Semog native seal through decorateSemogPdf', () => {
     expect(fixture.store.native.itemUpdates).toHaveLength(1);
     expect(fixture.store.native.audits).toMatchObject([{ data: { type: 'DOCUMENT_COMPLETED' } }]);
     expect(fixture.store.native.statements.some((text) => text.includes('INSERT INTO semog_bridge.outbox'))).toBe(true);
+  }, 60000);
+  it('reports a signing failure without completing the envelope or masking the original error', async () => {
+    const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
+    signEveryone(fixture);
+    const original = new Error('injected signing failure');
+    vi.spyOn(fixture.signer, 'sign').mockRejectedValueOnce(original);
+    const timings: SemogStageTiming[] = [];
+    await expect(seal(fixture, (timing) => timings.push(timing))).rejects.toBe(original);
+    expect(timings.filter((timing) => !timing.ok).map((timing) => timing.stage)).toEqual([
+      'seal.signer',
+      'seal.sign',
+      'seal.transaction',
+      'seal.total',
+    ]);
+    expect(timings.some((timing) => timing.stage === 'seal.complete')).toBe(false);
+    expect(fixture.store.native.envelopeUpdates).toHaveLength(0);
   }, 60000);
   it('rejects: stamps only the original pages, keeps signed fields, envelope REJECTED', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });

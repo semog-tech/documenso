@@ -11,6 +11,7 @@ import { SEMOG_EXTENSION_PREFIX } from './extension-http';
 import type { SemogOutboxEffect } from './outbox';
 import { SEMOG_PARTIAL_SEAL_PREFIX } from './partial-seal-http';
 import { createSemogSigningRuntime } from './runtime';
+import { timeSemogStage } from './timing';
 
 type Dependencies = Parameters<typeof createSemogSigningRuntime>[0] & {
   deliveryEnabled?: boolean;
@@ -65,12 +66,18 @@ export const createSemogHost = (dependencies: Dependencies) => {
         await dependencies.deliverExternal(effect);
         return;
       }
-      const actor = await readSealActor(dependencies.client, effect);
-      const receipt = await runtime.executor.get(actor, effect.chaveOperacao);
-      if (receipt.envelopeId !== effect.envelopeId || receipt.situacao !== 'concluida') {
-        throw denied();
-      }
-      await runtime.sealer.seal(actor, effect.envelopeId);
+      await timeSemogStage(dependencies.observe, 'seal.delivery', async () => {
+        const actor = await timeSemogStage(dependencies.observe, 'seal.actor', () =>
+          readSealActor(dependencies.client, effect),
+        );
+        const receipt = await timeSemogStage(dependencies.observe, 'seal.receipt-check', () =>
+          runtime.executor.get(actor, effect.chaveOperacao),
+        );
+        if (receipt.envelopeId !== effect.envelopeId || receipt.situacao !== 'concluida') {
+          throw denied();
+        }
+        await runtime.sealer.seal(actor, effect.envelopeId);
+      });
     },
   });
   const draft = createSemogDraftRuntime(dependencies),

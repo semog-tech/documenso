@@ -33,7 +33,7 @@ type Dependencies = {
   deliver?: (effect: SemogOutboxEffect) => Promise<void>;
   sealOnly?: boolean;
   getDocumentI18n?: SemogDocumentI18n;
-  /** Per-stage manifestation durations for the host log; never receives personal or document data. */
+  /** Per-stage bridge durations for the host log; never receives personal or document data. */
   observe?: SemogStageObserver;
   /** `suppress` only once the outbox migration accepts the final 'suprimido' state (see the host). */
   externalEffects?: SemogExternalEffects;
@@ -74,6 +74,7 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     readPdf,
     pdfStore,
     externalEffects,
+    observe,
     signer: dependencies.signer,
     rejectionFont: dependencies.rejectionFont,
     getDocumentI18n: dependencies.getDocumentI18n,
