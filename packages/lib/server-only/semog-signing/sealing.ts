@@ -16,6 +16,7 @@ import { readSemogOutside } from './execution-observed';
 import type { SemogPdfReader } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
 import { persistSemogDerivedPdf, recordSemogWrites } from './pdf-store';
+import type { SemogSealNotification } from './seal-notify';
 import type { SemogActor } from './service';
 import type { SemogStageObserver } from './timing';
 import { timeSemogStage } from './timing';
@@ -30,6 +31,7 @@ type Dependencies = {
   signer?: Signer;
   rejectionFont?: Uint8Array;
   getDocumentI18n?: SemogDocumentI18n;
+  notifyCompleted?: (notification: SemogSealNotification) => void;
 };
 const denied = () => new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 409 });
 type DiagonalStamp = {
@@ -347,15 +349,16 @@ const finishSeal = async (
   rejected: boolean,
   externalEffects: SemogExternalEffects | undefined,
 ) => {
+  const completedAt = new Date();
   await tx.envelope.update({
     where: { id: envelopeId },
-    data: { status: rejected ? 'REJECTED' : 'COMPLETED', completedAt: new Date() },
+    data: { status: rejected ? 'REJECTED' : 'COMPLETED', completedAt },
   });
   const external = await resolveSemogExternalEffects(tx, externalEffects);
   await tx.$executeRaw(Prisma.sql`INSERT INTO semog_bridge.outbox(id,"chaveOperacao","envelopeId",kind,payload,estado)
     SELECT ${`${envelopeId}-document-completed`},"chaveOperacao",${envelopeId},'webhook',${JSON.stringify({ event: rejected ? 'DOCUMENT_REJECTED' : 'DOCUMENT_COMPLETED', envelopeId })}::jsonb,${semogEffectState('webhook', external)}
     FROM semog_bridge.outbox WHERE "envelopeId"=${envelopeId} AND kind='seal' ON CONFLICT(id) DO NOTHING`);
-  return { envelopeId, documentoConcluido: !rejected };
+  return { envelopeId, documentoConcluido: !rejected, completedAt };
 };
 const sealLocked = async (
   dependencies: Dependencies,
@@ -367,7 +370,7 @@ const sealLocked = async (
 ) => {
   const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId, dependencies.observe);
   if (envelope.status === 'COMPLETED' || envelope.status === 'REJECTED') {
-    return { envelopeId, documentoConcluido: envelope.status === 'COMPLETED' };
+    return { envelopeId, documentoConcluido: envelope.status === 'COMPLETED', completedAt: envelope.completedAt };
   }
   const rejected = assertSealable(dependencies, envelope);
   const readiness = await tx.$queryRaw<{ ready: boolean }[]>(
@@ -416,6 +419,13 @@ export const createSemogPrismaSealer = (dependencies: Dependencies) => ({
       );
       // After the commit, outside any transaction: the sealed objects are read back and proven by content.
       await timeSemogStage(dependencies.observe, 'seal.confirm', () => writes.confirm());
-      return result;
+      if (result.documentoConcluido && result.completedAt && dependencies.notifyCompleted) {
+        try {
+          dependencies.notifyCompleted({ envelopeId, completedAt: result.completedAt.toISOString() });
+        } catch {
+          // This optional hint cannot fail the seal, its confirmation or the outbox acknowledgment.
+        }
+      }
+      return { envelopeId: result.envelopeId, documentoConcluido: result.documentoConcluido };
     }),
 });
