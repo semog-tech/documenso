@@ -1,5 +1,12 @@
 /** Manifestation stages measured for the host log. Carries no person, token or document data. */
 export type SemogStage =
+  | 'get.metadata'
+  | 'pdf.metadata'
+  | 'get.transaction'
+  | 'pdf.source'
+  | 'pdf.read'
+  | 'pdf.hash'
+  | 'pdf.transaction'
   | 'manifestation'
   | 'reserve.read'
   | 'reserve.snapshot'

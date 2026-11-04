@@ -181,6 +181,18 @@ da manifestação e então chama `runtime.sealer.seal`. O PDF usa o renderizador
 nativo e CMS detached com o certificado injetado. A cadeia não busca AIA pela
 rede; o certificado configurado precisa conter a cadeia necessária.
 
+O estado de uma manifestação concluída consulta os metadados do recibo de
+selagem e os digests calculados no banco, sem transferir o original ou o selado
+ao processo. Novos recibos guardam também tipo, tamanho, hash do original e
+digests das representações persistidas; recibos inline anteriores continuam
+compatíveis, calculando o hash do conteúdo no banco. Em S3, as chaves por hash
+permitem essa conferência sem buscar o objeto. O download lê apenas o selado,
+uma vez, e confere SHA-256, tamanho quando persistido e vínculo com a linha e o
+recibo sob trava. O estado não atesta a disponibilidade atual do bucket:
+indisponibilidade e objeto adulterado são detectados no download. A migração
+autorizada de Base64 para S3 preserva a validade dos recibos. Detalhes e ensaio:
+[ponte com leitura única](semog/2026-11-04-ponte-leitura-unica.md).
+
 O consumo usa lease de 120 segundos, confirmação após commit e até oito
 tentativas duráveis. Falha é reportada no log sem corpo, token ou CPF. O loop não
 sobrepõe chamadas. SIGTERM/SIGINT fecham o HTTP e aguardam a chamada em andamento;

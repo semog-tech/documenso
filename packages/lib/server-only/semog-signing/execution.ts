@@ -14,6 +14,7 @@ import {
   prepareSemogObserved,
   readSemogDocumentDataDigest,
   readSemogOutside,
+  validateSemogSealMetadata,
   ZSemogSealReceipt,
 } from './execution-observed';
 import type { SemogPdfReader } from './initial-pdf';
@@ -134,13 +135,14 @@ const replayResult = (operation: SemogExecutionOperation) => {
   return result;
 };
 /**
- * A concluded signature, reported from the transaction's locked state. Its PDFs were read beforehand
- * (prepareSemogObserved); here only digests are compared, so no object or Base64 read happens under the lock.
+ * A concluded signature from the locked state. Metadata-only callers never fetch PDF content; downloads
+ * bind their single pre-read to this same state and the durable receipt.
  */
 const observedResult = async (
   tx: Prisma.TransactionClient,
   operation: SemogExecutionOperation,
-  prepared: SemogPreparedObserved,
+  prepared: SemogPreparedObserved | null,
+  observe?: SemogStageObserver,
 ) => {
   const result = replayResult(operation);
   if (result.acao !== 'assinar') {
@@ -164,16 +166,18 @@ const observedResult = async (
   if (seal.data.documentDataId !== data.id) {
     throw unavailable();
   }
-  const digest = await readSemogDocumentDataDigest(tx, data.id);
-  // The sealed file must be a new document, never the original under another name.
-  if (digest.data === digest.initial) {
-    throw unavailable();
+  const digest = await timeSemogStage(observe, prepared === null ? 'get.metadata' : 'pdf.metadata', () =>
+    readSemogDocumentDataDigest(tx, data.id, seal.data.metadata === undefined),
+  );
+  validateSemogSealMetadata(seal.data, digest, operation.hashDocumento);
+  if (prepared === null) {
+    return { result: { ...result, documentoConcluido: true, pdfDisponivel: true }, sealed: null };
   }
   const observed = bindSemogObserved(prepared, {
     documentDataId: data.id,
     digest,
-    hashDocumento: operation.hashDocumento,
     hashPdf: seal.data.hashPdf,
+    bytes: seal.data.metadata?.bytes,
   });
   // Sealed after the pre-read: honestly "not yet available"; the next query reads it.
   return observed === null
@@ -189,7 +193,7 @@ type PreparedDocument = { ok: true; value: VerifiedDocument } | { ok: false; err
 /** Everything settled before the Serializable transaction: the PDFs read and how external effects are recorded. */
 type Prepared = {
   document: PreparedDocument;
-  observed: SemogPreparedObserved;
+  observed: SemogPreparedObserved | null;
   externalEffects?: SemogExternalEffects;
 };
 const nothingObserved: SemogPreparedObserved = { ok: true, value: null };
@@ -286,7 +290,7 @@ const executeLocked = async (tx: Prisma.TransactionClient, actor: SemogActor, ke
   const input = validateDurableBinding(operation);
   await validateSemogVisualSignature(input);
   if (operation.estado === 'concluida') {
-    return (await observedResult(tx, operation, prepared.observed)).result;
+    return (await observedResult(tx, operation, prepared.observed, undefined)).result;
   }
   const snapshot = await readActiveSnapshot(tx, operation);
   if (typeof snapshot.conteudo.consentimento !== 'string') {
@@ -393,8 +397,8 @@ const executeWithRetry = (dependencies: Dependencies, actor: SemogActor, key: st
 /** Actual field/signature/recipient/audit writes. A failed callback rolls back ALL writes and outbox rows. */
 export const createSemogPrismaExecutor = (dependencies: Dependencies) => {
   const observe = (actor: SemogActor, key: string) =>
-    prepareSemogObserved(dependencies.client, dependencies.readPdf, actor, key);
-  const readLocked = (actor: SemogActor, key: string, prepared: SemogPreparedObserved) =>
+    prepareSemogObserved(dependencies.client, dependencies.readPdf, actor, key, dependencies.observe);
+  const readLocked = (actor: SemogActor, key: string, prepared: SemogPreparedObserved | null) =>
     dependencies.client.$transaction(
       async (tx) => {
         const operation = await lockOperation(tx, actor, key);
@@ -405,7 +409,7 @@ export const createSemogPrismaExecutor = (dependencies: Dependencies) => {
             sealed: null,
           };
         }
-        return await observedResult(tx, operation, prepared);
+        return await observedResult(tx, operation, prepared, dependencies.observe);
       },
       { isolationLevel: 'Serializable', timeout: 10000, maxWait: 10000 },
     );
@@ -414,8 +418,8 @@ export const createSemogPrismaExecutor = (dependencies: Dependencies) => {
     execute: async (actor: SemogActor, key: string, prefetched?: SemogPrefetchedDocument) => {
       requireEnabled(dependencies);
       const document = await prepareDocument(dependencies, actor, key, prefetched);
-      // A key already concluded when read needs its sealed PDF instead, also read before the transaction.
-      const observed = document === null ? await observe(actor, key) : nothingObserved;
+      // A concluded replay only needs the persisted seal metadata.
+      const observed = document === null ? null : nothingObserved;
       return await executeWithRetry(dependencies, actor, key, {
         document,
         observed,
@@ -424,11 +428,14 @@ export const createSemogPrismaExecutor = (dependencies: Dependencies) => {
     },
     get: async (actor: SemogActor, key: string): Promise<SemogExecutionResult> => {
       requireEnabled(dependencies);
-      return (await readLocked(actor, key, await observe(actor, key))).result;
+      return (await timeSemogStage(dependencies.observe, 'get.transaction', () => readLocked(actor, key, null))).result;
     },
     pdf: async (actor: SemogActor, key: string) => {
       requireEnabled(dependencies);
-      const { result, sealed } = await readLocked(actor, key, await observe(actor, key));
+      const prepared = await observe(actor, key);
+      const { result, sealed } = await timeSemogStage(dependencies.observe, 'pdf.transaction', () =>
+        readLocked(actor, key, prepared),
+      );
       if (!result.pdfDisponivel || sealed === null) {
         throw unavailable();
       }

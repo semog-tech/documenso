@@ -273,7 +273,17 @@ const persistSealedItems = async (
       data: { type: stored.type, data: stored.data, initialData: item.documentData.initialData },
     });
     await tx.envelopeItem.update({ where: { id: item.id }, data: { documentDataId: data.id } });
-    const receipt = { documentDataId: data.id, hashPdf: createHash('sha256').update(signed).digest('hex') };
+    const receipt = {
+      documentDataId: data.id,
+      hashPdf: createHash('sha256').update(signed).digest('hex'),
+      metadata: {
+        type: stored.type,
+        hashInitialDataValue: createHash('sha256').update(item.documentData.initialData).digest('hex'),
+        hashDataValue: createHash('sha256').update(stored.data).digest('hex'),
+        hashOriginal: createHash('sha256').update(takeSemogOriginal(originals, item.documentData)).digest('hex'),
+        bytes: signed.byteLength,
+      },
+    };
     await tx.$executeRaw(Prisma.sql`UPDATE semog_bridge.operations SET execucao=jsonb_set(execucao,'{selagem}',${JSON.stringify(receipt)}::jsonb)
       WHERE "envelopeId"=${envelope.id} AND estado='concluida' AND execucao IS NOT NULL`);
   }
