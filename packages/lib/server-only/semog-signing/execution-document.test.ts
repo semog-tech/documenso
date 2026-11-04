@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { ZSemogSealReceipt } from './execution-observed';
 import { executionFixture, pdfWithPages, sealedLikePdf } from './execution-test-fixtures';
@@ -21,6 +21,20 @@ const reserveAndFailOnce = async (fixture: Awaited<ReturnType<typeof executionFi
 };
 
 describe('PDF da manifestação fora da transação Serializable', () => {
+  it('libera o original somente no download selado conferido e tolera falha da limpeza local', async () => {
+    const release = vi.fn((_hash: string) => Promise.reject(new Error('cache offline')));
+    const fixture = await executionFixture({ storage: 'S3_PATH', onSealedPdfRead: release });
+    await fixture.service.reserve(fixture.actor, fixture.input);
+    fixture.state.pdfReads = 0;
+    await expect(fixture.executor.pdf(fixture.actor, fixture.input.chaveOperacao)).rejects.toThrow();
+    expect(release).not.toHaveBeenCalled();
+    const sealed = await fixture.markSealed();
+    await fixture.executor.get(fixture.actor, fixture.input.chaveOperacao);
+    expect(release).not.toHaveBeenCalled();
+    fixture.state.pdfReads = 0;
+    expect(await fixture.executor.pdf(fixture.actor, fixture.input.chaveOperacao)).toEqual(sealed);
+    expect(release).toHaveBeenCalledExactlyOnceWith(createHash('sha256').update(fixture.pdf).digest('hex'));
+  });
   it('lê o PDF uma única vez por manifestação e nunca dentro da transação', async () => {
     const fixture = await executionFixture();
     const result = await fixture.service.reserve(fixture.actor, fixture.input);

@@ -7,6 +7,10 @@ import { AppError, AppErrorCode } from '../../errors/app-error';
 export type SemogPdfStore = {
   read: (key: string) => Promise<Uint8Array>;
   write: (key: string, bytes: Uint8Array) => Promise<void>;
+  /** Proves remote persistence against checksum/length, with a remote read-back when unavailable. */
+  confirm?: (key: string, bytes: Uint8Array) => Promise<void>;
+  /** Discards only the local copy, when a caller has observed a remote lifecycle change. */
+  invalidateCache?: (key: string) => Promise<void>;
   /** Cheap presence check (HEAD), when the transport has one; content is proven by every later read anyway. */
   exists?: (key: string) => Promise<boolean>;
 };
@@ -38,7 +42,7 @@ export const readSemogStoredPdf = async (store: SemogPdfStore, key: string) => {
 
 /**
  * Uploads under the content address; an upload left behind by a rolled-back transaction is just an unused copy.
- * `readBack` (default) reads the object again and proves it by content before anyone may reference it. Only the
+ * `readBack` (default) confirms remote checksum/length, or reads it back when unsupported. Only the
  * seal skips it: its upload runs inside the seal transaction, where no PDF is read, and relies instead on the
  * SHA-256 checksum the bucket verifies on arrival — every later reader proves the bytes anyway.
  */
@@ -50,9 +54,17 @@ export const putSemogStoredPdf = async (
   const key = semogPdfKeyFor(options.hash ?? sha256(bytes));
   await store.write(key, bytes);
   if (options.readBack !== false) {
-    await readSemogStoredPdf(store, key);
+    await confirmSemogStoredPdf(store, key, bytes);
   }
   return { type: 'S3_PATH', data: key } satisfies SemogStoredPdf;
+};
+
+const confirmSemogStoredPdf = async (store: SemogPdfStore, key: string, bytes: Uint8Array) => {
+  if (store.confirm) {
+    await store.confirm(key, bytes);
+    return;
+  }
+  await readSemogStoredPdf(store, key);
 };
 
 /**
@@ -87,7 +99,7 @@ const ensureOnce = async (store: SemogPdfStore, key: string, bytes: Uint8Array) 
       );
   if (!present) {
     await store.write(key, bytes);
-    await readSemogStoredPdf(store, key);
+    await confirmSemogStoredPdf(store, key, bytes);
   }
 };
 /** The row is committed but its object could not be confirmed: repeating the request (same key) ensures it again. */
@@ -119,7 +131,7 @@ export const ensureSemogStoredPdf = async (
 
 /**
  * A seal is written inside its transaction, where no PDF is read. The recorder remembers what was written there so
- * that, right after the commit, every object is read back and proven by content; one that does not match is
+ * that, right after the commit, every object is confirmed remotely; one that does not match is
  * rewritten from the bytes still in memory. Only if that also fails does the caller get an error.
  */
 export const recordSemogWrites = (store: SemogPdfStore | undefined) => {
@@ -136,8 +148,24 @@ export const recordSemogWrites = (store: SemogPdfStore | undefined) => {
       return;
     }
     for (const { key, bytes } of written) {
-      // Proven by content (no HEAD shortcut): the seal skipped the read-back when it wrote.
-      await ensureSemogStoredPdf({ read: store.read, write: store.write }, key, bytes);
+      // Force integrity confirmation rather than the draft's presence-only HEAD shortcut.
+      await ensureSemogStoredPdf(
+        {
+          read: store.read,
+          write: store.write,
+          confirm: store.confirm,
+          exists: async () => {
+            try {
+              await confirmSemogStoredPdf(store, key, bytes);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        },
+        key,
+        bytes,
+      );
     }
   };
   return { store: recording, confirm };

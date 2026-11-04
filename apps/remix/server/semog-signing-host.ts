@@ -4,6 +4,8 @@ import { createSemogApiTokenAuthenticator } from '@documenso/lib/server-only/sem
 import { createSemogDocumentI18n } from '@documenso/lib/server-only/semog-signing/document-pages';
 import { createSemogHost } from '@documenso/lib/server-only/semog-signing/host';
 import { createSemogHostRateLimit } from '@documenso/lib/server-only/semog-signing/host-rate-limit';
+import { createSemogPdfDiskCache } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache';
+import { semogPdfDiskCacheOptionsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache-env';
 import { createSemogS3PdfStore, semogS3SettingsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
 import type { SemogStageObserver } from '@documenso/lib/server-only/semog-signing/timing';
 import { env } from '@documenso/lib/utils/env';
@@ -29,6 +31,7 @@ export const semogHostRateLimit = createSemogHostRateLimit({
 
 // Stage, duration, PDF size and attempts only: no envelope, person, token or document content.
 const observeSemogStage: SemogStageObserver = (timing) => logger.info({ semogStage: timing }, 'Semog signing stage');
+let closePdfCache: (() => void) | undefined;
 
 /**
  * The bridge follows the native upload transport: with `s3` its PDFs go to the same bucket (R2) under content
@@ -36,7 +39,18 @@ const observeSemogStage: SemogStageObserver = (timing) => logger.info({ semogSta
  */
 const semogPdfStore = () => {
   const settings = semogS3SettingsFromEnv(env);
-  return settings && createSemogS3PdfStore(settings, observeSemogStage);
+  if (!settings) {
+    return undefined;
+  }
+  const cache = createSemogPdfDiskCache(
+    semogPdfDiskCacheOptionsFromEnv(
+      env,
+      JSON.stringify([settings.endpoint ?? '', settings.region ?? 'us-east-1', settings.bucket]),
+      (reason) => logger.warn({ semogPdfCache: reason }, 'Semog PDF cache bypass; R2 remains authoritative.'),
+    ),
+  );
+  closePdfCache = cache.close;
+  return createSemogS3PdfStore({ ...settings, cache }, observeSemogStage);
 };
 /** No development certificate fallback, implicit outbound delivery, or worker without opt-in. */
 const initializeHost = async () => {
@@ -114,5 +128,7 @@ export const stopSemogHost = async () => {
     await host?.stop();
   } catch {
     logger.error('Semog signing host shutdown failed.');
+  } finally {
+    closePdfCache?.();
   }
 };

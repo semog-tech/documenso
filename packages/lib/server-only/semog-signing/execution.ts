@@ -41,6 +41,8 @@ type Dependencies = {
   readPdf: SemogPdfReader;
   observe?: SemogStageObserver;
   externalEffects?: SemogExternalEffects;
+  /** Best-effort local eviction, only after a sealed download was bound to the completed receipt. */
+  onSealedPdfRead?: (hashOriginal: string) => Promise<void>;
 };
 const unavailable = () => new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 409 });
 const requireEnabled = (dependencies: Dependencies) => {
@@ -438,6 +440,11 @@ export const createSemogPrismaExecutor = (dependencies: Dependencies) => {
       );
       if (!result.pdfDisponivel || sealed === null) {
         throw unavailable();
+      }
+      try {
+        await dependencies.onSealedPdfRead?.(result.hashDocumento);
+      } catch {
+        // Local cache maintenance must never turn a verified download into a failed operation.
       }
       // The very bytes whose SHA-256 the locked receipt just confirmed.
       return sealed;
