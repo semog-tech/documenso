@@ -89,7 +89,19 @@ const digestOf = (state: State, text: string) => {
     }
     return [{ hash: sha256(state.documentData.initialData) }];
   }
-  return [{ initial: sha256(state.documentData.initialData), data: sha256(state.documentData.data) }];
+  const contentHash = (value: string) =>
+    state.documentData.type === 'S3_PATH'
+      ? (/^semog\/pdf\/([a-f0-9]{64})\.pdf$/.exec(value)?.[1] ?? null)
+      : sha256(Buffer.from(value, 'base64'));
+  return [
+    {
+      initial: sha256(state.documentData.initialData),
+      data: sha256(state.documentData.data),
+      type: state.documentData.type,
+      originalContent: contentHash(state.documentData.initialData),
+      sealedContent: contentHash(state.documentData.data),
+    },
+  ];
 };
 const answerOperation = (state: State, text: string, statement: Prisma.Sql) => {
   const operation = state.operation;
@@ -268,7 +280,7 @@ export const executionFixture = async (
     observe: options.observe,
   });
   /** The state the sealer leaves: COMPLETED, a new DocumentData holding the sealed file, and the seal receipt. */
-  const markSealed = async () => {
+  const markSealed = async ({ legacy = false } = {}) => {
     const sealed = await sealedLikePdf();
     const data =
       state.documentData.type === 'S3_PATH' ? semogPdfKeyFor(sha256(sealed)) : Buffer.from(sealed).toString('base64');
@@ -280,7 +292,23 @@ export const executionFixture = async (
       envelopeItems: [{ ...state.envelope.envelopeItems[0], documentDataId: 'sealed' }],
     };
     if (state.operation) {
-      state.operation.execucao = { selagem: { documentDataId: 'sealed', hashPdf: sha256(sealed) } };
+      state.operation.execucao = {
+        selagem: {
+          documentDataId: 'sealed',
+          hashPdf: sha256(sealed),
+          ...(legacy
+            ? {}
+            : {
+                metadata: {
+                  type: state.documentData.type,
+                  hashInitialDataValue: sha256(state.documentData.initialData),
+                  hashDataValue: sha256(data),
+                  hashOriginal: sha256(pdf),
+                  bytes: sealed.byteLength,
+                },
+              }),
+        },
+      };
     }
     return sealed;
   };

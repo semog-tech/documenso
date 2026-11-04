@@ -7,7 +7,7 @@
  * optional SEMOG_PG_PARENT for the throwaway data directory. Never reads .env; removes everything at exit.
  */
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,6 +20,8 @@ import { createSemogPdfReader } from '../packages/lib/server-only/semog-signing/
 import { createSemogPartialSealService } from '../packages/lib/server-only/semog-signing/partial-seal-service';
 import { readSemogRefusal } from '../packages/lib/server-only/semog-signing/route-refusal';
 import { createSemogSigningRuntime } from '../packages/lib/server-only/semog-signing/runtime';
+
+import { buildLargeRehearsalPdf, measureSealedExecutor, verifyLargePdfCms } from './semog-signing-large-pdf';
 
 const workspace = process.cwd();
 const pgBin = process.env.SEMOG_PG_BIN ?? '/opt/homebrew/bin';
@@ -186,8 +188,8 @@ const buildPdf = async () => {
 
 type Team = Awaited<ReturnType<typeof createTeam>>;
 /** Five SIGNER recipients, parallel order, one SIGNATURE field each, activated by the bridge. */
-const createEnvelope = async (database: PrismaClient, owner: Team, expiresAt: Date) => {
-  const base64 = await buildPdf();
+const createEnvelope = async (database: PrismaClient, owner: Team, expiresAt: Date, suppliedPdf?: string) => {
+  const base64 = suppliedPdf ?? (await buildPdf());
   const envelopeId = `envelope_${randomUUID().replaceAll('-', '')}`;
   const itemId = `item_${randomUUID().slice(0, 8)}`;
   await database.envelope.create({
@@ -475,6 +477,101 @@ const roundsScenario = async (database: PrismaClient, owner: Team, services: Ser
   check(Buffer.compare(Buffer.from(kept), Buffer.from(round1Pdf)) === 0, 'round 1 partial seal row and PDF intact');
   const down = await readFile(resolve(workspace, 'db/2026-10-29-semog-extension.down.sql'), 'utf8');
   check(await rejects(() => sql(down)), 'extension down refuses while receipts exist');
+};
+
+/** Optional 55 MiB inline fixture: real PostgreSQL, native seal, exact downloaded CMS. */
+const largePdfScenario = async (database: PrismaClient, owner: Team, services: Services) => {
+  const base64 = await buildLargeRehearsalPdf(resolve(workspace, 'assets/example.pdf'));
+  console.log(`ok - synthetic large PDF original: ${Buffer.from(base64, 'base64').byteLength} bytes`);
+  const deadline = new Date(Date.now() + 86400000).toISOString();
+  const envelope = await createEnvelope(database, owner, new Date(deadline), base64);
+  const runtime = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+  });
+  // Four native-equivalent signatures avoid repeatedly parsing the large fixture during setup.
+  // The last one runs the real bridge reservation/executor and creates the durable sealing operation.
+  for (const entry of envelope.recipients.slice(0, 4)) {
+    await database.$transaction((tx) => signNatively(tx, entry));
+  }
+  const key = await sign(runtime, owner, envelope, 4, deadline);
+  const host = createSemogHost({
+    enabled: true,
+    client: database,
+    signer: services.signer,
+    rejectionFont: services.font,
+    getDocumentI18n: services.getDocumentI18n,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await host.tick();
+    if ((await database.envelope.findUniqueOrThrow({ where: { id: envelope.envelopeId } })).status === 'COMPLETED') {
+      break;
+    }
+  }
+  const downloaded = await measureSealedExecutor(database, owner.actor, key);
+  check(downloaded.byteLength >= 55 * 1024 * 1024, 'large attachment survived native sealing');
+  await verifyLargePdfCms(downloaded, root);
+  // Apply the real storage migrations only after the regular guard scenarios have finished.
+  await sql(await readFile(resolve(workspace, 'db/2026-10-31-semog-storage.sql'), 'utf8'));
+  await sql(await readFile(resolve(workspace, 'db/2026-11-01-semog-storage-liberacao.sql'), 'utf8'));
+  const item = await database.envelopeItem.findFirstOrThrow({
+    where: { envelopeId: envelope.envelopeId },
+    include: { documentData: true },
+  });
+  const objects = new Map<string, Uint8Array>();
+  const keyFor = (bytes: Uint8Array) => `semog/pdf/${createHash('sha256').update(bytes).digest('hex')}.pdf`;
+  const original = Buffer.from(item.documentData.initialData, 'base64');
+  const originalKey = keyFor(original);
+  const sealedKey = keyFor(downloaded);
+  objects.set(originalKey, original);
+  objects.set(sealedKey, downloaded);
+  await database.$queryRaw(
+    Prisma.sql`SELECT semog_bridge.migrate_document_data_to_s3(${item.documentData.id},${sealedKey},${originalKey})`,
+  );
+  let reads = 0;
+  const migrated = createSemogSigningRuntime({
+    enabled: true,
+    client: database,
+    pdfStore: {
+      read: (key) =>
+        Promise.resolve().then(() => {
+          reads++;
+          const bytes = objects.get(key);
+          if (!bytes) {
+            throw new Error('Synthetic object absent');
+          }
+          return bytes;
+        }),
+      write: (key, bytes) => {
+        objects.set(key, bytes);
+        return Promise.resolve();
+      },
+    },
+  });
+  const state = await migrated.executor.get(owner.actor, key);
+  check(state.pdfDisponivel && reads === 0, 'after real SQL storage migration, GET reads zero objects');
+  const migratedPdf = await migrated.executor.pdf(owner.actor, key);
+  check(
+    reads === 1 && Buffer.compare(Buffer.from(migratedPdf), Buffer.from(downloaded)) === 0,
+    'after real SQL storage migration, download reads sealed object once and preserves exact CMS bytes',
+  );
+  check(
+    await rejects(() =>
+      database.documentData.update({ where: { id: item.documentData.id }, data: { data: originalKey } }),
+    ),
+    'guard still refuses changing sealed DocumentData after migration',
+  );
+  objects.set(sealedKey, new Uint8Array([1, 2, 3]));
+  check(
+    await rejects(() => migrated.executor.pdf(owner.actor, key)),
+    'swapped sealed object is refused by the download',
+  );
 };
 
 const EXTENSION_SQL = 'db/2026-10-29-semog-extension.sql';
@@ -1406,17 +1503,24 @@ try {
   // Native renderers read fonts and the logo from the remix app directory.
   process.chdir(resolve(workspace, 'apps/remix'));
   const services = await createServices(client, owner.actor);
-  await guardScenario(client, owner);
-  await staleSnapshotScenario(client, owner, services);
-  await concurrentRoundScenario(client, owner, services);
-  await sharedKeyScenario(client, owner, services);
-  await roundsScenario(client, owner, services);
-  await contactGuardScenario(client, owner);
-  await contactScenario(client, owner, services);
-  await closedContactScenario(client, owner, services);
-  await cancelGuardScenario(client, owner);
-  await cancelScenario(client, owner, services);
-  await strandedOperationScenario(client, owner);
+  if (process.env.SEMOG_LARGE_PDF_ONLY === 'true') {
+    await largePdfScenario(client, owner, services);
+  } else {
+    await guardScenario(client, owner);
+    await staleSnapshotScenario(client, owner, services);
+    await concurrentRoundScenario(client, owner, services);
+    await sharedKeyScenario(client, owner, services);
+    await roundsScenario(client, owner, services);
+    await contactGuardScenario(client, owner);
+    await contactScenario(client, owner, services);
+    await closedContactScenario(client, owner, services);
+    await cancelGuardScenario(client, owner);
+    await cancelScenario(client, owner, services);
+    await strandedOperationScenario(client, owner);
+  }
+  if (process.env.SEMOG_LARGE_PDF === 'true' && process.env.SEMOG_LARGE_PDF_ONLY !== 'true') {
+    await largePdfScenario(client, owner, services);
+  }
 } finally {
   process.chdir(workspace);
   await client?.$disconnect();

@@ -5,26 +5,37 @@ import { z } from 'zod';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import type { SemogPrismaTransactionRunner } from './execution';
 import type { SemogPdfReader } from './initial-pdf';
-import { SEMOG_MAX_SEALED_PDF_BYTES, validateSemogPdf } from './initial-pdf';
+import { SEMOG_MAX_SEALED_PDF_BYTES } from './initial-pdf';
 import type { SemogActor } from './service';
+import type { SemogStageObserver } from './timing';
+import { timeSemogStage } from './timing';
 
 const sha256 = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const unavailable = () => new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 409 });
-export const ZSemogSealReceipt = z.object({ documentDataId: z.string(), hashPdf: z.string().regex(/^[a-f0-9]{64}$/) });
 
-/** A concluded signature's original and sealed PDFs, read and checked before the Serializable transaction. */
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const ZSemogSealMetadata = z.object({
+  type: z.enum(['BYTES', 'BYTES_64', 'S3_PATH']),
+  hashInitialDataValue: hashSchema,
+  hashDataValue: hashSchema,
+  hashOriginal: hashSchema,
+  bytes: z.number().int().positive(),
+});
+
+export const ZSemogSealReceipt = z.object({
+  documentDataId: z.string(),
+  hashPdf: hashSchema,
+  metadata: ZSemogSealMetadata.optional(),
+});
+
+/** Only the sealed bytes are prefetched; original content was proven at enrollment and sealing. */
 export type SemogObservedDocuments = {
   documentDataId: string;
-  /** SHA-256 of the column strings as read; the transaction compares the database's own digest of them. */
-  hashInitialDataValue: string;
+  type: string;
   hashDataValue: string;
-  hashOriginal: string;
   hashSealed: string;
-  /** Parse/signature-marker failure of the sealed file, rethrown where the in-transaction check used to fail. */
-  sealedError: unknown;
   sealed: Uint8Array;
 };
-/** `null`: nothing sealed yet when read — the transaction then reports the PDF as not yet available. */
 export type SemogPreparedObserved = { ok: true; value: SemogObservedDocuments | null } | { ok: false; error: unknown };
 
 /** Plain reads, no row locks; the same wait budget as the signing transaction. */
@@ -33,15 +44,6 @@ export const readSemogOutside = <T>(
   fn: (tx: Prisma.TransactionClient) => Promise<T>,
 ) => client.$transaction(fn, { isolationLevel: 'ReadCommitted', timeout: 10000, maxWait: 10000 });
 
-const inspectSealed = async (pdf: Uint8Array) => {
-  try {
-    await validateSemogPdf(pdf, [], SEMOG_MAX_SEALED_PDF_BYTES);
-  } catch (error) {
-    return error;
-  }
-  const contents = Buffer.from(pdf).toString('latin1');
-  return contents.includes('/ByteRange') && contents.includes('/ETSI.CAdES.detached') ? null : unavailable();
-};
 const readSealedSource = (client: SemogPrismaTransactionRunner, actor: SemogActor, key: string) =>
   readSemogOutside(client, async (tx) => {
     z.string().uuid().parse(key);
@@ -59,7 +61,7 @@ const readSealedSource = (client: SemogPrismaTransactionRunner, actor: SemogActo
       where: { id: operation.envelopeId, teamId: actor.teamId, status: 'COMPLETED', completedAt: { not: null } },
       include: {
         envelopeItems: {
-          include: { documentData: { select: { id: true, type: true, data: true, initialData: true } } },
+          include: { documentData: { select: { id: true, type: true, data: true } } },
         },
       },
     });
@@ -73,25 +75,28 @@ export const prepareSemogObserved = async (
   readPdf: SemogPdfReader,
   actor: SemogActor,
   key: string,
+  observe?: SemogStageObserver,
 ): Promise<SemogPreparedObserved> => {
   try {
-    const data = await readSealedSource(client, actor, key);
+    const data = await timeSemogStage(observe, 'pdf.source', () => readSealedSource(client, actor, key));
     if (data === null) {
       return { ok: true, value: null };
     }
-    const original = await readPdf({ documentDataId: data.id, type: data.type, data: data.initialData });
-    const sealed = await readPdf({ documentDataId: data.id, type: data.type, data: data.data });
+    const sealed = await timeSemogStage(
+      observe,
+      'pdf.read',
+      () => readPdf({ documentDataId: data.id, type: data.type, data: data.data }),
+      (bytes) => ({ bytes: bytes.byteLength }),
+    );
     return {
       ok: true,
-      value: {
+      value: await timeSemogStage(observe, 'pdf.hash', () => ({
         documentDataId: data.id,
-        hashInitialDataValue: sha256(data.initialData),
+        type: data.type,
         hashDataValue: sha256(data.data),
-        hashOriginal: sha256(original),
         hashSealed: sha256(sealed),
-        sealedError: await inspectSealed(sealed),
         sealed,
-      },
+      })),
     };
   } catch (error) {
     // Deferred like the signing read: surfaced only if the transaction reaches the point that needs the PDF.
@@ -99,28 +104,95 @@ export const prepareSemogObserved = async (
   }
 };
 
-/** Database digests of both columns: proves under the lock what the pre-read hashed, without moving the bytes. */
-export const readSemogDocumentDataDigest = async (tx: Prisma.TransactionClient, documentDataId: string) => {
-  const rows = await tx.$queryRaw<{ initial: string; data: string }[]>(
-    Prisma.sql`SELECT encode(sha256(convert_to("initialData",'UTF8')),'hex') initial, encode(sha256(convert_to(data,'UTF8')),'hex') data FROM public."DocumentData" WHERE id=${documentDataId}`,
-  );
+/**
+ * Only short digests leave PostgreSQL. New receipts need no binary decode at all. Old inline seals predate
+ * persisted metadata: PostgreSQL hashes their decoded content for compatibility; object keys already carry it.
+ */
+export const readSemogDocumentDataDigest = async (
+  tx: Prisma.TransactionClient,
+  documentDataId: string,
+  legacy = false,
+) => {
+  const rows = await tx.$queryRaw<
+    {
+      initial: string;
+      data: string;
+      type: string;
+      originalContent: string | null;
+      sealedContent: string | null;
+      invalidEncoding: boolean;
+      tooLarge: boolean;
+    }[]
+  >(Prisma.sql`WITH stored AS (
+    SELECT *,
+      (length("initialData") % 4 = 0 AND length(data) % 4 = 0
+       AND "initialData" ~ '^[A-Za-z0-9+/]*([AQgw]==|[AEIMQUYcgkosw048]=)?$'
+       AND data ~ '^[A-Za-z0-9+/]*([AQgw]==|[AEIMQUYcgkosw048]=)?$') canonical,
+      (length("initialData") > ${4 * Math.ceil(SEMOG_MAX_SEALED_PDF_BYTES / 3)}
+       OR length(data) > ${4 * Math.ceil(SEMOG_MAX_SEALED_PDF_BYTES / 3)}) oversized
+    FROM public."DocumentData" WHERE id=${documentDataId}
+  ) SELECT
+    encode(sha256(convert_to("initialData",'UTF8')),'hex') initial,
+    encode(sha256(convert_to(data,'UTF8')),'hex') data, type::text type,
+    (${legacy} AND type='BYTES_64' AND NOT canonical) "invalidEncoding",
+    (${legacy} AND type='BYTES_64' AND oversized) "tooLarge",
+    CASE WHEN type='S3_PATH' THEN substring("initialData" from '^semog/pdf/([a-f0-9]{64})[.]pdf$')
+      WHEN NOT ${legacy} THEN NULL
+      WHEN type='BYTES_64' AND canonical AND NOT oversized THEN encode(sha256(decode("initialData",'base64')),'hex')
+      WHEN type='BYTES' THEN encode(sha256(convert_to("initialData",'UTF8')),'hex') END "originalContent",
+    CASE WHEN type='S3_PATH' THEN substring(data from '^semog/pdf/([a-f0-9]{64})[.]pdf$')
+      WHEN NOT ${legacy} THEN NULL
+      WHEN type='BYTES_64' AND canonical AND NOT oversized THEN encode(sha256(decode(data,'base64')),'hex')
+      WHEN type='BYTES' THEN encode(sha256(convert_to(data,'UTF8')),'hex') END "sealedContent"
+    FROM stored`);
   if (rows.length !== 1) {
     throw unavailable();
+  }
+  if (rows[0].tooLarge) {
+    throw new AppError(AppErrorCode.INVALID_REQUEST, { statusCode: 400 });
+  }
+  if (rows[0].invalidEncoding) {
+    // The old strict codec rejected malformed stored Base64 as an internal/unavailable read (HTTP 503).
+    throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
   }
   return rows[0];
 };
 
-/**
- * Inside the transaction: the receipt's DocumentData still holds exactly the strings whose bytes were read, the
- * original hashes to the signed SHA-256 and the sealed file to the receipt. Returns null when nothing was read yet.
- */
+/** Receipt and current columns must still describe the immutable seal produced by the sealer. */
+export const validateSemogSealMetadata = (
+  receipt: z.infer<typeof ZSemogSealReceipt>,
+  digest: Awaited<ReturnType<typeof readSemogDocumentDataDigest>>,
+  hashDocumento: string,
+) => {
+  if (digest.data === digest.initial) {
+    throw unavailable();
+  }
+  // The authorized storage migration preserves content hashes while changing type and column strings.
+  if (digest.type === 'S3_PATH' || receipt.metadata === undefined) {
+    if (digest.originalContent !== hashDocumento || digest.sealedContent !== receipt.hashPdf) {
+      throw unavailable();
+    }
+    return;
+  }
+  const metadata = receipt.metadata;
+  if (
+    metadata.type !== digest.type ||
+    metadata.hashInitialDataValue !== digest.initial ||
+    metadata.hashDataValue !== digest.data ||
+    metadata.hashOriginal !== hashDocumento
+  ) {
+    throw unavailable();
+  }
+};
+
+/** Bind the single pre-read to the locked row and the persisted seal hash, never reading the original again. */
 export const bindSemogObserved = (
   prepared: SemogPreparedObserved,
   expected: {
     documentDataId: string;
-    digest: { initial: string; data: string };
-    hashDocumento: string;
+    digest: Awaited<ReturnType<typeof readSemogDocumentDataDigest>>;
     hashPdf: string;
+    bytes?: number;
   },
 ) => {
   if (!prepared.ok) {
@@ -132,17 +204,12 @@ export const bindSemogObserved = (
   }
   if (
     observed.documentDataId !== expected.documentDataId ||
-    observed.hashInitialDataValue !== expected.digest.initial ||
+    observed.type !== expected.digest.type ||
     observed.hashDataValue !== expected.digest.data ||
-    observed.hashOriginal !== expected.hashDocumento
+    observed.hashSealed !== expected.hashPdf ||
+    (expected.bytes !== undefined && observed.sealed.byteLength !== expected.bytes)
   ) {
     throw unavailable();
-  }
-  if (observed.hashSealed !== expected.hashPdf) {
-    throw unavailable();
-  }
-  if (observed.sealedError !== null) {
-    throw observed.sealedError;
   }
   return observed;
 };
