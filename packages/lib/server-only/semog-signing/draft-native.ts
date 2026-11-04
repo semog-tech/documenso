@@ -8,47 +8,54 @@ import { mapDocumentIdToSecondaryId } from '../../utils/envelope';
 import type { SemogDraftInput, SemogDraftResult } from './draft-contract';
 import type { SemogStoredPdf } from './pdf-store';
 import type { SemogActor } from './service';
+import { type SemogStageObserver, timeSemogStage } from './timing';
 
 const createDocument = async (
   tx: Prisma.TransactionClient,
   actor: SemogActor,
   input: SemogDraftInput,
   document: SemogStoredPdf,
+  observe?: SemogStageObserver,
 ) => {
-  const counter = await tx.counter.update({ where: { id: 'document' }, data: { value: { increment: 1 } } });
-  const data = await tx.documentData.create({
-    data: { type: document.type, data: document.data, initialData: document.data },
+  const { counter, data } = await timeSemogStage(observe, 'draft.document', async () => {
+    const counter = await tx.counter.update({ where: { id: 'document' }, data: { value: { increment: 1 } } });
+    const data = await tx.documentData.create({
+      data: { type: document.type, data: document.data, initialData: document.data },
+    });
+    return { counter, data };
   });
-  return await tx.envelope.create({
-    data: {
-      id: prefixedId('envelope'),
-      secondaryId: mapDocumentIdToSecondaryId(counter.value),
-      externalId: input.externalId,
-      title: input.titulo,
-      type: 'DOCUMENT',
-      source: 'DOCUMENT',
-      internalVersion: 2,
-      signatureLevel: 'SES',
-      status: 'DRAFT',
-      user: { connect: { id: actor.userId } },
-      team: { connect: { id: actor.teamId } },
-      visibility: 'MANAGER_AND_ABOVE',
-      authOptions: { globalAccessAuth: [], globalActionAuth: [] },
-      documentMeta: {
-        create: {
-          distributionMethod: DocumentDistributionMethod.NONE,
-          language: 'pt-BR',
-          timezone: 'America/Sao_Paulo',
-          signingOrder:
-            input.ordemAssinatura === 'sequencial' ? DocumentSigningOrder.SEQUENTIAL : DocumentSigningOrder.PARALLEL,
+  return await timeSemogStage(observe, 'draft.envelope-items', () =>
+    tx.envelope.create({
+      data: {
+        id: prefixedId('envelope'),
+        secondaryId: mapDocumentIdToSecondaryId(counter.value),
+        externalId: input.externalId,
+        title: input.titulo,
+        type: 'DOCUMENT',
+        source: 'DOCUMENT',
+        internalVersion: 2,
+        signatureLevel: 'SES',
+        status: 'DRAFT',
+        user: { connect: { id: actor.userId } },
+        team: { connect: { id: actor.teamId } },
+        visibility: 'MANAGER_AND_ABOVE',
+        authOptions: { globalAccessAuth: [], globalActionAuth: [] },
+        documentMeta: {
+          create: {
+            distributionMethod: DocumentDistributionMethod.NONE,
+            language: 'pt-BR',
+            timezone: 'America/Sao_Paulo',
+            signingOrder:
+              input.ordemAssinatura === 'sequencial' ? DocumentSigningOrder.SEQUENTIAL : DocumentSigningOrder.PARALLEL,
+          },
+        },
+        envelopeItems: {
+          create: { id: prefixedId('envelope_item'), title: input.arquivo.nome, order: 1, documentDataId: data.id },
         },
       },
-      envelopeItems: {
-        create: { id: prefixedId('envelope_item'), title: input.arquivo.nome, order: 1, documentDataId: data.id },
-      },
-    },
-    include: { envelopeItems: true },
-  });
+      include: { envelopeItems: true },
+    }),
+  );
 };
 const createRecipient = async (
   tx: Prisma.TransactionClient,
@@ -104,21 +111,26 @@ export const createSemogNativeDraft = async (
   actor: SemogActor,
   input: SemogDraftInput,
   document: SemogStoredPdf,
+  observe?: SemogStageObserver,
 ): Promise<SemogDraftResult> => {
-  const envelope = await createDocument(tx, actor, input, document);
+  const envelope = await createDocument(tx, actor, input, document, observe);
   const ids = { envelopeId: envelope.id, itemId: envelope.envelopeItems[0].id };
   const signatarios: SemogDraftResult['signatarios'] = [];
-  for (const recipient of input.signatarios) {
-    signatarios.push(await createRecipient(tx, ids, recipient));
-  }
-  await tx.documentAuditLog.create({
-    data: createDocumentAuditLogData({
-      type: DOCUMENT_AUDIT_LOG_TYPE.DOCUMENT_CREATED,
-      envelopeId: envelope.id,
-      user: { id: actor.userId },
-      data: { title: input.titulo, source: { type: 'DOCUMENT' } },
-    }),
+  await timeSemogStage(observe, 'draft.recipients-fields', async () => {
+    for (const recipient of input.signatarios) {
+      signatarios.push(await createRecipient(tx, ids, recipient));
+    }
   });
+  await timeSemogStage(observe, 'draft.audit', () =>
+    tx.documentAuditLog.create({
+      data: createDocumentAuditLogData({
+        type: DOCUMENT_AUDIT_LOG_TYPE.DOCUMENT_CREATED,
+        envelopeId: envelope.id,
+        user: { id: actor.userId },
+        data: { title: input.titulo, source: { type: 'DOCUMENT' } },
+      }),
+    }),
+  );
   return {
     operacaoId: input.operacaoId,
     envelopeId: envelope.id,
