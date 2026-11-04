@@ -5,6 +5,7 @@ import { parseSemogDraftMultipart, semogDraftBinaryBodyLimit, semogMultipartBoun
 import type { SemogDraftService } from './draft-service';
 import type { SemogActor } from './service';
 import { semogError } from './service-validation';
+import { type SemogStageObserver, timeSemogStage } from './timing';
 
 export const SEMOG_DRAFT_PATH = '/api/semog/v1/envelopes-rascunho';
 export const semogDraftJsonResponse = (body: unknown, status: number) =>
@@ -53,41 +54,66 @@ export const readSemogBoundedJsonBody = async (request: Request, maximum: number
   parseBody(await readSemogBoundedBody(request, maximum));
 const mediaType = (request: Request) => request.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
 /** Legacy JSON (`arquivo.pdfBase64`) stays accepted while the semogapp moves to the binary multipart body. */
-const createDraft = async (service: SemogDraftService, actor: SemogActor, request: Request) => {
+const createDraft = async (
+  service: SemogDraftService,
+  actor: SemogActor,
+  request: Request,
+  observe?: SemogStageObserver,
+) => {
   if (mediaType(request) === 'application/json') {
-    const body = await readSemogBoundedJsonBody(request, semogDraftBodyLimit(service.maximumPdfBytes));
+    const received = await timeSemogStage(
+      observe,
+      'draft.body',
+      () => readSemogBoundedBody(request, semogDraftBodyLimit(service.maximumPdfBytes)),
+      (bytes) => ({ bytes: bytes.byteLength }),
+    );
+    const body = await timeSemogStage(observe, 'draft.parse.json', () => parseBody(received));
     return await service.create(actor, body);
   }
   const boundary = semogMultipartBoundary(request.headers.get('content-type'));
   if (boundary === null) {
     throw semogError(AppErrorCode.INVALID_BODY, 400);
   }
-  const body = await readSemogBoundedBody(request, semogDraftBinaryBodyLimit(service.maximumPdfBytes));
-  const { metadata, pdf } = parseSemogDraftMultipart(body, boundary);
+  const body = await timeSemogStage(
+    observe,
+    'draft.body',
+    () => readSemogBoundedBody(request, semogDraftBinaryBodyLimit(service.maximumPdfBytes)),
+    (bytes) => ({ bytes: bytes.byteLength }),
+  );
+  const { metadata, pdf } = await timeSemogStage(
+    observe,
+    'draft.parse.multipart',
+    () => parseSemogDraftMultipart(body, boundary),
+    ({ pdf }) => ({ bytes: pdf.byteLength }),
+  );
   return await service.createBinary(actor, metadata, pdf);
 };
 /** Separate opt-in handler: never falls through to the native API or mounts itself. */
-export const createSemogDraftHandler = (service: SemogDraftService) => async (request: Request) => {
-  try {
-    if (new URL(request.url).pathname !== SEMOG_DRAFT_PATH || request.method !== 'POST') {
-      return semogDraftJsonResponse({ error: 'Rota indisponível.' }, 404);
+export const createSemogDraftHandler =
+  (service: SemogDraftService, observe?: SemogStageObserver) => async (request: Request) => {
+    try {
+      return await timeSemogStage(observe, 'draft.total', async () => {
+        if (new URL(request.url).pathname !== SEMOG_DRAFT_PATH || request.method !== 'POST') {
+          return semogDraftJsonResponse({ error: 'Rota indisponível.' }, 404);
+        }
+        const bearer = /^Bearer ([^\s]+)$/.exec(request.headers.get('authorization') ?? '');
+        if (!bearer) {
+          throw semogError(AppErrorCode.UNAUTHORIZED, 401);
+        }
+        const actor = await timeSemogStage(observe, 'draft.authenticate', () => service.authenticate(bearer[1]));
+        const result = await createDraft(service, actor, request, observe);
+        return await timeSemogStage(observe, 'draft.response', () => semogDraftJsonResponse(result, 200));
+      });
+    } catch (error) {
+      const status =
+        error instanceof z.ZodError
+          ? 400
+          : error instanceof AppError && [400, 401, 404, 409, 413, 503].includes(error.statusCode ?? 0)
+            ? (error.statusCode ?? 503)
+            : 503;
+      return semogDraftJsonResponse(
+        { error: status === 503 ? 'Ponte indisponível.' : 'Solicitação não autorizada ou inválida.' },
+        status,
+      );
     }
-    const bearer = /^Bearer ([^\s]+)$/.exec(request.headers.get('authorization') ?? '');
-    if (!bearer) {
-      throw semogError(AppErrorCode.UNAUTHORIZED, 401);
-    }
-    const actor = await service.authenticate(bearer[1]);
-    return semogDraftJsonResponse(await createDraft(service, actor, request), 200);
-  } catch (error) {
-    const status =
-      error instanceof z.ZodError
-        ? 400
-        : error instanceof AppError && [400, 401, 404, 409, 413, 503].includes(error.statusCode ?? 0)
-          ? (error.statusCode ?? 503)
-          : 503;
-    return semogDraftJsonResponse(
-      { error: status === 503 ? 'Ponte indisponível.' : 'Solicitação não autorizada ou inválida.' },
-      status,
-    );
-  }
-};
+  };

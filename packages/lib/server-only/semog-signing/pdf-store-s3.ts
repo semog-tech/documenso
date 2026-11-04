@@ -12,6 +12,8 @@ import { SEMOG_MAX_SEALED_PDF_BYTES } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyHash } from './pdf-store';
 import type { SemogPurgeObjects } from './storage-purge';
+import type { SemogStageObserver } from './timing';
+import { timeSemogStage } from './timing';
 
 /** The native upload transport's settings (NEXT_PRIVATE_UPLOAD_*), passed in by the host; nothing read here. */
 export type SemogS3Settings = {
@@ -60,18 +62,26 @@ const connect = (settings: SemogS3Settings) => {
   });
   return { client, timeouts };
 };
-export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore => {
+export const createSemogS3PdfStore = (settings: SemogS3Settings, observe?: SemogStageObserver): SemogPdfStore => {
   const { client, timeouts } = connect(settings);
-  const read = async (key: string, abortSignal: AbortSignal) => {
-    const object = await client.send(new GetObjectCommand({ Bucket: settings.bucket, Key: key }), { abortSignal });
-    if (!object.Body || (object.ContentLength ?? 0) > SEMOG_MAX_SEALED_PDF_BYTES) {
-      throw failure('Objeto ausente ou acima do teto do PDF selado.');
-    }
-    return await object.Body.transformToByteArray();
-  };
+  const read = (key: string, abortSignal: AbortSignal) =>
+    timeSemogStage(
+      observe,
+      'storage.s3.read',
+      async () => {
+        const object = await client.send(new GetObjectCommand({ Bucket: settings.bucket, Key: key }), { abortSignal });
+        if (!object.Body || (object.ContentLength ?? 0) > SEMOG_MAX_SEALED_PDF_BYTES) {
+          throw failure('Objeto ausente ou acima do teto do PDF selado.');
+        }
+        return await object.Body.transformToByteArray();
+      },
+      (bytes) => ({ bytes: bytes.byteLength }),
+    );
   const exists = async (key: string, abortSignal: AbortSignal) => {
     try {
-      await client.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: key }), { abortSignal });
+      await timeSemogStage(observe, 'storage.s3.head', () =>
+        client.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: key }), { abortSignal }),
+      );
       return true;
     } catch (error) {
       if (isMissing(error)) {
@@ -81,20 +91,51 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
     }
   };
   /** Content-addressed: an existing object is kept only if its bytes really hash to the key. */
-  const alreadyStored = async (key: string, expected: string, abortSignal: AbortSignal) =>
-    (await exists(key, abortSignal)) && sha256(await read(key, abortSignal)).digest('hex') === expected;
+  const hashBytes = (bytes: Uint8Array) =>
+    timeSemogStage(
+      observe,
+      'storage.s3.hash',
+      () => ({
+        hash: sha256(bytes).digest('hex'),
+        bytes: bytes.byteLength,
+      }),
+      (result) => ({ bytes: result.bytes }),
+    );
+  const alreadyStored = async (key: string, expected: string, abortSignal: AbortSignal) => {
+    if (!(await exists(key, abortSignal))) {
+      return false;
+    }
+    return (await hashBytes(await read(key, abortSignal))).hash === expected;
+  };
   const put = async (key: string, bytes: Uint8Array, abortSignal: AbortSignal) => {
     try {
-      await client.send(
-        new PutObjectCommand({
-          Bucket: settings.bucket,
-          Key: key,
-          Body: bytes,
-          ContentType: 'application/pdf',
-          // R2 and MinIO verify it on arrival: corruption in transit is refused instead of stored.
-          ChecksumSHA256: sha256(bytes).digest('base64'),
+      const checksum = await timeSemogStage(
+        observe,
+        'storage.s3.checksum',
+        () => ({
+          value: sha256(bytes).digest('base64'),
+          bytes: bytes.byteLength,
         }),
-        { abortSignal },
+        (result) => ({ bytes: result.bytes }),
+      );
+      await timeSemogStage(
+        observe,
+        'storage.s3.put',
+        async () => {
+          await client.send(
+            new PutObjectCommand({
+              Bucket: settings.bucket,
+              Key: key,
+              Body: bytes,
+              ContentType: 'application/pdf',
+              // R2 and MinIO verify it on arrival: corruption in transit is refused instead of stored.
+              ChecksumSHA256: checksum.value,
+            }),
+            { abortSignal },
+          );
+          return bytes.byteLength;
+        },
+        (size) => ({ bytes: size }),
       );
     } catch (error) {
       // A locked bucket refuses the rewrite of a damaged object: say so instead of carrying on with it.
@@ -109,7 +150,7 @@ export const createSemogS3PdfStore = (settings: SemogS3Settings): SemogPdfStore 
     exists: (key) => exists(key, AbortSignal.timeout(timeouts.operationMs)),
     write: async (key, bytes) => {
       const expected = semogPdfKeyHash(key);
-      if (expected === null || sha256(bytes).digest('hex') !== expected) {
+      if (expected === null || (await hashBytes(bytes)).hash !== expected) {
         throw failure('Chave do PDF não corresponde aos bytes.');
       }
       // One deadline for the whole write: HEAD, the GET of an existing object and the PUT share it.

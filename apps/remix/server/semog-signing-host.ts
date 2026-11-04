@@ -5,6 +5,7 @@ import { createSemogDocumentI18n } from '@documenso/lib/server-only/semog-signin
 import { createSemogHost } from '@documenso/lib/server-only/semog-signing/host';
 import { createSemogHostRateLimit } from '@documenso/lib/server-only/semog-signing/host-rate-limit';
 import { createSemogS3PdfStore, semogS3SettingsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
+import type { SemogStageObserver } from '@documenso/lib/server-only/semog-signing/timing';
 import { env } from '@documenso/lib/utils/env';
 import { getTranslations } from '@documenso/lib/utils/i18n';
 import { logger } from '@documenso/lib/utils/logger';
@@ -26,13 +27,16 @@ export const semogHostRateLimit = createSemogHostRateLimit({
   },
 });
 
+// Stage, duration, PDF size and attempts only: no envelope, person, token or document content.
+const observeSemogStage: SemogStageObserver = (timing) => logger.info({ semogStage: timing }, 'Semog signing stage');
+
 /**
  * The bridge follows the native upload transport: with `s3` its PDFs go to the same bucket (R2) under content
  * addresses; with any other transport they stay inline (BYTES_64), the behaviour before object storage.
  */
 const semogPdfStore = () => {
   const settings = semogS3SettingsFromEnv(env);
-  return settings && createSemogS3PdfStore(settings);
+  return settings && createSemogS3PdfStore(settings, observeSemogStage);
 };
 /** No development certificate fallback, implicit outbound delivery, or worker without opt-in. */
 const initializeHost = async () => {
@@ -66,8 +70,7 @@ const initializeHost = async () => {
     // place and records job/webhook effects 'suprimido' only then; before it they stay 'pendente' as always.
     externalEffects: 'suppress',
     onError: () => logger.error('Semog signing worker failed; inspect its durable outbox.'),
-    // Stage, duration, PDF size and attempts only: no envelope, person, token or document content.
-    observe: (timing) => logger.info({ semogStage: timing }, 'Semog signing stage'),
+    observe: observeSemogStage,
   });
   if (env('SEMOG_SIGNING_WORKER_ENABLED') === 'true') {
     host.start();

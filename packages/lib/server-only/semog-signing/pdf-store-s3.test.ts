@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { S3Client } from '@aws-sdk/client-s3';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { semogPdfKeyFor } from './pdf-store';
 import { createSemogS3PdfStore, createSemogS3PurgeObjects, semogS3SettingsFromEnv } from './pdf-store-s3';
+import type { SemogStageObserver, SemogStageTiming } from './timing';
 
 type Behaviour = (request: IncomingMessage, response: ServerResponse) => void;
 const servers: Server[] = [];
@@ -15,6 +17,7 @@ const fakeS3 = async (behaviour: Behaviour) => {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`; // listen(0) on TCP always yields AddressInfo
 };
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise((done) => server.close(done));
@@ -23,14 +26,17 @@ afterEach(async () => {
 const bytes = new TextEncoder().encode('%PDF-1.7 prazo');
 const key = semogPdfKeyFor(createHash('sha256').update(bytes).digest('hex'));
 /** Production connect/headers values; only the shared operation deadline is shortened (6 s) to keep tests fast. */
-const store = async (behaviour: Behaviour) =>
-  createSemogS3PdfStore({
-    bucket: 'local',
-    endpoint: await fakeS3(behaviour),
-    forcePathStyle: true,
-    credentials: { accessKeyId: 'x', secretAccessKey: 'y' },
-    timeouts: { connectMs: 5000, headersMs: 20000, operationMs: 6000 },
-  });
+const store = async (behaviour: Behaviour, observe?: SemogStageObserver) =>
+  createSemogS3PdfStore(
+    {
+      bucket: 'local',
+      endpoint: await fakeS3(behaviour),
+      forcePathStyle: true,
+      credentials: { accessKeyId: 'x', secretAccessKey: 'y' },
+      timeouts: { connectMs: 5000, headersMs: 20000, operationMs: 6000 },
+    },
+    observe,
+  );
 const elapsed = async (operation: () => Promise<unknown>) => {
   const started = Date.now();
   await expect(operation()).rejects.toBeDefined();
@@ -124,5 +130,94 @@ describe('Cliente S3 da purga', () => {
       undefined,
     );
     expect(() => semogS3SettingsFromEnv((name) => ({ ...env, NEXT_PRIVATE_UPLOAD_BUCKET: '' })[name])).toThrow();
+  });
+});
+
+describe('Medição do transporte S3 sem dados do objeto', () => {
+  it('separa checksum do PUT real e informa bytes sem chave, bucket ou conteúdo', async () => {
+    const timings: SemogStageTiming[] = [];
+    const received: string[] = [];
+    const s3 = await store(
+      (request, response) => {
+        received.push(request.method ?? '');
+        request.resume();
+        request.on('end', () => response.writeHead(request.method === 'HEAD' ? 404 : 200).end());
+      },
+      (timing) => timings.push(timing),
+    );
+    await s3.write(key, bytes);
+    expect(received).toEqual(['HEAD', 'PUT']);
+    expect(timings.map((timing) => [timing.stage, timing.ok, timing.bytes])).toEqual([
+      ['storage.s3.hash', true, bytes.byteLength],
+      ['storage.s3.head', false, undefined],
+      ['storage.s3.checksum', true, bytes.byteLength],
+      ['storage.s3.put', true, bytes.byteLength],
+    ]);
+    for (const timing of timings) {
+      expect(timing.ms).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(timing).sort()).toEqual(
+        timing.bytes === undefined ? ['ms', 'ok', 'stage'] : ['bytes', 'ms', 'ok', 'stage'],
+      );
+    }
+  });
+  it('mede GET com o consumo do corpo e reutiliza objeto íntegro sem PUT', async () => {
+    const timings: SemogStageTiming[] = [];
+    const received: string[] = [];
+    const s3 = await store(
+      (request, response) => {
+        received.push(request.method ?? '');
+        response.writeHead(200, { 'Content-Length': bytes.byteLength, 'Content-Type': 'application/pdf' });
+        response.end(request.method === 'HEAD' ? undefined : bytes);
+      },
+      (timing) => timings.push(timing),
+    );
+    await s3.write(key, bytes);
+    expect(received).toEqual(['HEAD', 'GET']);
+    expect(timings.map((timing) => timing.stage)).toEqual([
+      'storage.s3.hash',
+      'storage.s3.head',
+      'storage.s3.read',
+      'storage.s3.hash',
+    ]);
+    expect(timings.find((timing) => timing.stage === 'storage.s3.read')).toMatchObject({
+      ok: true,
+      bytes: bytes.byteLength,
+    });
+  });
+  it('preserva erro original de leitura mesmo se observer falhar', async () => {
+    const original = new Error('falha sintética');
+    vi.spyOn(S3Client.prototype, 'send').mockRejectedValue(original);
+    const timings: SemogStageTiming[] = [];
+    const s3 = createSemogS3PdfStore({ bucket: 'local' }, (timing) => {
+      timings.push(timing);
+      throw new Error('observer indisponível');
+    });
+    await expect(s3.read(key)).rejects.toBe(original);
+    expect(timings).toEqual([{ stage: 'storage.s3.read', ms: expect.any(Number), ok: false }]);
+  });
+  it('observer que falha não muda sucesso nem conversão existente de erro no PUT', async () => {
+    const s3 = await store(
+      (request, response) => {
+        request.resume();
+        request.on('end', () => response.writeHead(request.method === 'HEAD' ? 404 : 403).end());
+      },
+      () => {
+        throw new Error('observer indisponível');
+      },
+    );
+    await expect(s3.write(key, bytes)).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining('recusada pelo armazenamento'),
+    });
+    const good = await store(
+      (request, response) => {
+        request.resume();
+        request.on('end', () => response.writeHead(request.method === 'HEAD' ? 404 : 200).end());
+      },
+      () => {
+        throw new Error('observer indisponível');
+      },
+    );
+    await expect(good.write(key, bytes)).resolves.toBeUndefined();
   });
 });
