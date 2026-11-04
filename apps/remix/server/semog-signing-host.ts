@@ -4,6 +4,7 @@ import { createSemogApiTokenAuthenticator } from '@documenso/lib/server-only/sem
 import { createSemogDocumentI18n } from '@documenso/lib/server-only/semog-signing/document-pages';
 import { createSemogHost } from '@documenso/lib/server-only/semog-signing/host';
 import { createSemogHostRateLimit } from '@documenso/lib/server-only/semog-signing/host-rate-limit';
+import { createSemogPdfCacheWarningObserver } from '@documenso/lib/server-only/semog-signing/pdf-cache-warnings';
 import { createSemogPdfDiskCache } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache';
 import { semogPdfDiskCacheOptionsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache-env';
 import { createSemogS3PdfStore, semogS3SettingsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
@@ -31,6 +32,9 @@ export const semogHostRateLimit = createSemogHostRateLimit({
 
 // Stage, duration, PDF size and attempts only: no envelope, person, token or document content.
 const observeSemogStage: SemogStageObserver = (timing) => logger.info({ semogStage: timing }, 'Semog signing stage');
+const warnPdfCache = createSemogPdfCacheWarningObserver((reason) =>
+  logger.warn({ semogPdfCache: reason }, 'Semog PDF cache bypass; R2 remains authoritative.'),
+);
 let closePdfCache: (() => void) | undefined;
 
 /**
@@ -46,7 +50,7 @@ const semogPdfStore = () => {
     semogPdfDiskCacheOptionsFromEnv(
       env,
       JSON.stringify([settings.endpoint ?? '', settings.region ?? 'us-east-1', settings.bucket]),
-      (reason) => logger.warn({ semogPdfCache: reason }, 'Semog PDF cache bypass; R2 remains authoritative.'),
+      warnPdfCache,
     ),
   );
   closePdfCache = cache.close;

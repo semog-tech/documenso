@@ -1,4 +1,5 @@
 import type { SemogPdfDiskCacheOptions } from './pdf-disk-cache';
+import { SEMOG_PDF_CACHE_MAX_SWEEP_MS } from './pdf-disk-cache';
 
 /** Invalid cache configuration disables this disposable optimization, never the bridge. */
 export const semogPdfDiskCacheOptionsFromEnv = (
@@ -24,7 +25,12 @@ export const semogPdfDiskCacheOptionsFromEnv = (
       continue;
     }
     const numeric = Number(value);
-    if (!/^\d+$/.test(value) || !Number.isSafeInteger(numeric * multiplier) || numeric <= 0) {
+    if (
+      !/^\d+$/.test(value) ||
+      !Number.isSafeInteger(numeric * multiplier) ||
+      numeric <= 0 ||
+      (property === 'sweepIntervalMs' && numeric * multiplier > SEMOG_PDF_CACHE_MAX_SWEEP_MS)
+    ) {
       options.enabled = false;
       onWarning('unavailable');
       return options;

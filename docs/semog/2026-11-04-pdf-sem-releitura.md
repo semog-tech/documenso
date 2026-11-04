@@ -121,7 +121,9 @@ habilitar a flag, o Claude deve criar/preparar a raiz desse volume como
 `1001:1001`, modo `0700`, e conferir que o processo consegue escrever nela.
 Um named volume vazio montado como root não concede essa escrita automaticamente.
 Prover ao menos teto + reserva, cerca de **8 GB disponíveis**, com margem para
-o filesystem e outros consumidores. O cache não substitui backup nem retenção R2.
+o filesystem e outros consumidores. O cache não substitui backup nem retenção R2. O intervalo de varredura configurável
+aceita no máximo 35791 minutos (limite de timer do Node); acima disso, desliga
+o cache com aviso.
 Para rollback imediato do cache, definir `SEMOG_PDF_CACHE_ENABLED=false`; pode
 preservar o volume para análise ou removê-lo depois de parar seu único consumidor.
 Não remover volume do banco. B não exige env nova nem migração.
@@ -226,6 +228,42 @@ falta de espaço e os defaults operacionais não são relaxados. Diretórios,
 certificado efêmero, PDFs e bancos descartáveis são removidos no `finally`.
 
 
+## Correções da revisão independente do Claude
+
+No mesmo PR #12, antes de qualquer merge, foram atendidos os três pontos
+obrigatórios da revisão:
+
+- **Intervalo da varredura:** valores acima de `2147483647` ms desligam o cache
+  com aviso, antes de criar qualquer timer. O parser aceita até **35791 minutos**;
+  `35792` é inválido. A proteção também existe na configuração direta do módulo,
+  incluindo zero/NaN, para não depender exclusivamente das envs.
+- **Pouco disco:** a escrita primeiro calcula quais entradas LRU precisariam
+  sair pelo teto e consulta o disco, somando o espaço que esse plano liberaria.
+  Se a reserva mínima ainda seria insuficiente, não remove essas entradas.
+  Se o plano permite gravar, remove os candidatos e confere novamente o espaço;
+  mudanças externas no filesystem ainda podem impedir a escrita, sem falhar a
+  operação. A expiração e o teto na inicialização/varredura continuam independentes.
+- **Ativação:** além de validar os bytes contra o hash (inclusive os do cache),
+  faz HEAD remoto por `exists` no store S3 antes da transação de ativação.
+  Ausência ou falha do HEAD recusa a ativação. Stores antigos sem `exists`
+  continuam dependendo da própria leitura; o store S3 do host sempre tem HEAD.
+
+Também foi adotada a melhoria opcional dos avisos: no host, cada motivo fixo
+pode emitir no máximo um aviso por minuto, por processo, usando relógio monotônico.
+Os demais aperfeiçoamentos da revisão permanecem separados desta rodada.
+
+Testes novos verificam os limites exatos do timer, cache desligado sem timer/I/O,
+preservação dos hits quando não há espaço suficiente, escrita permitida pelo
+espaço recuperado por LRU, ativação recusada após hit real de disco quando o R2
+não tem o objeto, erro de HEAD preservado e sucesso somente com presença remota.
+O limitador de avisos tem teste na fronteira de 60 segundos e por motivo.
+
+**As tabelas de desempenho acima registram o commit inicial `c6306bd1`, anterior
+à revisão.** O novo HEAD da ativação acrescenta uma chamada remota nessa etapa:
+o caminho novo passa de cinco para seis HEADs no ciclo completo. O envio da
+tabela já exclui ativação; os dados originais foram preservados, sem inventar
+cronômetros para a correção. Não foi necessário repetir o ensaio de multipart.
+
 ## Verificação e publicação
 
 Portões finais executados com dependências do lockfile (`npm ci`, sem alterar
@@ -234,7 +272,7 @@ passo. Node 24.21.0, npm 11.19.0. Nenhum build executado.
 
 - Biome no escopo exato da CI: aprovado; os quatro scripts novos também aprovados.
 - `tsconfig.semog-signing.json`: TypeScript aprovado, incluindo testes e scripts.
-- Vitest da ponte: **37 arquivos, 360 testes aprovados**.
+- Vitest da ponte: **38 arquivos, 372 testes aprovados**.
 - Patches nativos Node: **33/33 aprovados**.
 - Processo HTTP real em loopback: rotas, middleware, default-off e autenticação
   antes do corpo aprovados.
@@ -245,7 +283,7 @@ passo. Node 24.21.0, npm 11.19.0. Nenhum build executado.
   detached via OpenSSL, além do candidato multipart isolado.
 - `git diff --check`: aprovado. Sem PDFs ou certificados versionados.
 
-Os 17 testes do módulo de cache cobrem corrupção, despejo LRU, arquivo maior que
+Os testes do módulo de cache cobrem corrupção, despejo LRU, arquivo maior que
 o teto, desligado sem I/O, concorrência e cópias isoladas, falha real no meio da
 escrita temporária, órfãos, TTL padrão/expiração após restart, varredura periódica,
 reserva mínima de disco, diretório indisponível, isolamento por bucket, traversal,

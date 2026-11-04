@@ -28,6 +28,7 @@ export type SemogPdfDiskCache = {
 const digest = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 const ENTRY = /^[a-f0-9]{64}-[a-f0-9]{64}\.pdf$/;
 const TEMP = /^\.semog-[a-f0-9-]+\.tmp$/;
+export const SEMOG_PDF_CACHE_MAX_SWEEP_MS = 2_147_483_647;
 const isMissing = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT';
 type Entry = { path: string; size: number; touched: number };
 
@@ -40,6 +41,10 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
   const maxBytes = options.maxBytes ?? 3_000_000_000;
   const idleTtlMs = options.idleTtlMs ?? 72 * 60 * 60 * 1000;
   const minFreeBytes = options.minFreeBytes ?? 5_000_000_000;
+  const sweepIntervalMs = options.sweepIntervalMs ?? 30 * 60 * 1000;
+  const hasValidSweep =
+    Number.isSafeInteger(sweepIntervalMs) && sweepIntervalMs > 0 && sweepIntervalMs <= SEMOG_PDF_CACHE_MAX_SWEEP_MS;
+  const enabled = options.enabled && hasValidSweep;
   const directory = resolve(options.directory);
   const pending = new Map<string, Promise<Uint8Array>>();
   let invalidationVersion = 0;
@@ -53,6 +58,9 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
       // Telemetry is optional; a failing observer must not change storage behavior.
     }
   };
+  if (options.enabled && !hasValidSweep) {
+    warn('unavailable');
+  }
   const filename = (key: string) => {
     const hash = semogPdfKeyHash(key);
     return hash === null ? null : `${digest(`${options.scope ?? ''}\0${key}`)}-${hash}.pdf`;
@@ -88,16 +96,26 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
     }
     return result.sort((a, b) => a.touched - b.touched || a.path.localeCompare(b.path));
   };
-  const evict = async (incomingBytes: number) => {
+  const planEviction = async (incomingBytes: number) => {
     const files = await entries();
+    const planned: Entry[] = [];
     let total = files.reduce((sum, file) => sum + file.size, 0);
     for (const file of files) {
       if (total + incomingBytes <= maxBytes) {
         break;
       }
-      await remove(file.path);
+      planned.push(file);
       total -= file.size;
     }
+    return planned;
+  };
+  const removePlanned = async (planned: Entry[]) => {
+    for (const file of planned) {
+      await remove(file.path);
+    }
+  };
+  const evict = async (incomingBytes: number) => {
+    await removePlanned(await planEviction(incomingBytes));
   };
   const initialize = async () => {
     if (ready) {
@@ -130,7 +148,7 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
   };
   const write = async (key: string, bytes: Uint8Array) => {
     const name = filename(key);
-    if (!options.enabled || closed || !name || bytes.byteLength > maxBytes) {
+    if (!enabled || closed || !name || bytes.byteLength > maxBytes) {
       return;
     }
     await safely(async () => {
@@ -139,11 +157,21 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
         return;
       }
       const path = join(directory, name);
-      await evict(bytes.byteLength);
+      const planned = await planEviction(bytes.byteLength);
       const space = await fs.statfs(directory);
-      if (space.bavail * space.bsize - bytes.byteLength < minFreeBytes) {
+      const reclaimedBytes = planned.reduce((sum, file) => sum + file.size, 0);
+      if (space.bavail * space.bsize + reclaimedBytes - bytes.byteLength < minFreeBytes) {
         warn('low-space');
         return;
+      }
+      await removePlanned(planned);
+      if (planned.length > 0) {
+        // Free space can change outside this queue, and unlink need not reclaim every estimated byte.
+        const remaining = await fs.statfs(directory);
+        if (remaining.bavail * remaining.bsize - bytes.byteLength < minFreeBytes) {
+          warn('low-space');
+          return;
+        }
       }
       const temporary = join(directory, `.semog-${randomUUID()}.tmp`);
       try {
@@ -214,7 +242,7 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
     return bytes;
   };
   const read: SemogPdfDiskCache['read'] = async (key, load) => {
-    if (!options.enabled || closed || !filename(key)) {
+    if (!enabled || closed || !filename(key)) {
       return await load();
     }
     let current = pending.get(key);
@@ -233,7 +261,7 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
   };
   const invalidate = async (key: string) => {
     const name = filename(key);
-    if (!options.enabled || closed || !name) {
+    if (!enabled || closed || !name) {
       return;
     }
     // Wait for an in-flight R2 read to finish populating before removing its copy.
@@ -241,16 +269,13 @@ export const createSemogPdfDiskCache = (options: SemogPdfDiskCacheOptions): Semo
     await pending.get(key)?.catch(() => undefined);
     await safely(() => remove(join(directory, name)));
   };
-  const timer = options.enabled
-    ? setInterval(
-        () => {
-          void safely(() => evict(0));
-        },
-        options.sweepIntervalMs ?? 30 * 60 * 1000,
-      )
+  const timer = enabled
+    ? setInterval(() => {
+        void safely(() => evict(0));
+      }, sweepIntervalMs)
     : undefined;
   timer?.unref();
-  if (options.enabled) {
+  if (enabled) {
     void safely(async () => undefined);
   }
   return {

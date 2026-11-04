@@ -37,7 +37,8 @@ const validateActor = async (tx: Prisma.TransactionClient, actor: SemogActor) =>
 };
 /**
  * Before the transaction (no lock held during the download): an object-stored draft is read back once and proven
- * against its content address. Returns the proven key; the transaction only accepts that exact key.
+ * against its content address. A remote HEAD also proves presence when content came from cache.
+ * Returns the proven key; the transaction only accepts that exact key.
  */
 const prepareSemogActivationDocument = async (dependencies: Dependencies, actor: SemogActor, envelopeId: string) => {
   const data = await readSemogOutside(dependencies.client, (tx) =>
@@ -53,6 +54,9 @@ const prepareSemogActivationDocument = async (dependencies: Dependencies, actor:
     throw semogError(AppErrorCode.NOT_SETUP, 503);
   }
   await readSemogStoredPdf(dependencies.pdfStore, data.data);
+  if (dependencies.pdfStore.exists && !(await dependencies.pdfStore.exists(data.data))) {
+    throw semogError(AppErrorCode.NOT_SETUP, 503);
+  }
   return data.data;
 };
 const activateTransaction = async (

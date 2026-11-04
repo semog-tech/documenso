@@ -196,6 +196,74 @@ describe('disposable PDF disk cache', () => {
     expect(onWarning).toHaveBeenCalledWith('low-space');
   });
 
+  it('preserves cached hits when even planned LRU eviction cannot provide the disk reserve', async () => {
+    const onWarning = vi.fn();
+    const cache = makeCache({ maxBytes: 6, minFreeBytes: 2, onWarning });
+    await cache.write(keyFor(bytesA), bytesA);
+    await cache.write(keyFor(bytesB), bytesB);
+    const before = await files();
+    const space = await fs.statfs(directory);
+    vi.spyOn(fs, 'statfs').mockResolvedValue({ ...space, bsize: 1, bavail: 0 });
+    // Evicting one 3-byte entry meets the cache ceiling, but leaves no 2-byte disk reserve.
+    await cache.write(keyFor(bytesC), bytesC);
+    expect(await files()).toEqual(before);
+    expect(onWarning).toHaveBeenCalledWith('low-space');
+    const load = vi.fn(() => Promise.reject(new Error('cached hits must remain available')));
+    expect(await cache.read(keyFor(bytesA), load)).toEqual(bytesA);
+    expect(await cache.read(keyFor(bytesB), load)).toEqual(bytesB);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('allows a write when planned LRU eviction recovers the required disk reserve', async () => {
+    const onWarning = vi.fn();
+    const cache = makeCache({ maxBytes: 6, minFreeBytes: 2, onWarning });
+    await cache.write(keyFor(bytesA), bytesA);
+    const oldest = join(directory, (await files())[0]);
+    const old = new Date(Date.now() - 10000);
+    await fs.utimes(oldest, old, old);
+    await cache.write(keyFor(bytesB), bytesB);
+    const space = await fs.statfs(directory);
+    const statfs = vi
+      .spyOn(fs, 'statfs')
+      .mockResolvedValueOnce({ ...space, bsize: 1, bavail: 2 })
+      .mockResolvedValue({ ...space, bsize: 1, bavail: 5 });
+    await cache.write(keyFor(bytesC), bytesC);
+    expect(statfs).toHaveBeenCalledTimes(2);
+    await expect(fs.stat(oldest)).rejects.toMatchObject({ code: 'ENOENT' });
+    const load = vi.fn(() => Promise.reject(new Error('expected cache hit')));
+    expect(await cache.read(keyFor(bytesB), load)).toEqual(bytesB);
+    expect(await cache.read(keyFor(bytesC), load)).toEqual(bytesC);
+    expect(onWarning).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    2_147_483_648,
+    Number.MAX_SAFE_INTEGER,
+    Number.NaN,
+    0,
+  ])('disables direct invalid sweep options without creating a Node timer: %s', async (sweepIntervalMs) => {
+    const onWarning = vi.fn();
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const cache = makeCache({ directory: join(directory, 'disabled'), sweepIntervalMs, onWarning });
+    const load = vi.fn(async () => bytesA);
+    await cache.write(keyFor(bytesA), bytesA);
+    await Promise.all([cache.read(keyFor(bytesA), load), cache.read(keyFor(bytesA), load)]);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(interval).not.toHaveBeenCalled();
+    expect(onWarning).toHaveBeenCalledExactlyOnceWith('unavailable');
+    expect(await fs.readdir(directory)).toEqual([]);
+  });
+
+  it('accepts the maximum direct Node timer interval', async () => {
+    const onWarning = vi.fn();
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const cache = makeCache({ sweepIntervalMs: 2_147_483_647, onWarning });
+    await cache.write(keyFor(bytesA), bytesA);
+    expect(interval).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647);
+    expect(onWarning).not.toHaveBeenCalled();
+    expect((await files()).length).toBe(1);
+  });
+
   it('isolates identical content across object scopes and rejects path traversal keys', async () => {
     const one = makeCache({ scope: 'bucket-one' });
     const two = makeCache({ scope: 'bucket-two' });

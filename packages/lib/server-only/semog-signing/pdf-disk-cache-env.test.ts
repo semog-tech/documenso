@@ -34,4 +34,21 @@ describe('Semog PDF cache environment', () => {
     expect(options.enabled).toBe(false);
     expect(warn).toHaveBeenCalledOnce();
   });
+  it.each([
+    ['35791', true],
+    ['35792', false],
+  ] as const)('bounds sweep minutes to the Node timer limit: %s', (minutes, enabled) => {
+    const warn = vi.fn();
+    const options = semogPdfDiskCacheOptionsFromEnv(
+      (name) =>
+        name === 'SEMOG_PDF_CACHE_ENABLED' ? 'true' : name === 'SEMOG_PDF_CACHE_SWEEP_MINUTES' ? minutes : undefined,
+      'bucket',
+      warn,
+    );
+    expect(options.enabled).toBe(enabled);
+    expect(warn).toHaveBeenCalledTimes(enabled ? 0 : 1);
+    if (enabled) {
+      expect(options.sweepIntervalMs).toBe(35791 * 60 * 1000);
+    }
+  });
 });
