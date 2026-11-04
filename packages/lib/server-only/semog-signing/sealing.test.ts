@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSemogPdfReader } from './initial-pdf';
+import { createSemogOutboxWorker } from './outbox';
 import {
   createSemogPartialSealFixture,
   SEMOG_REPOSITORY_ROOT,
@@ -14,6 +15,7 @@ import {
 import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyFor } from './pdf-store';
 import { createSemogS3PdfStore } from './pdf-store-s3';
+import { createSemogSealNotifier, type SemogSealNotification } from './seal-notify';
 import { createSemogPrismaSealer } from './sealing';
 import type { SemogStageObserver, SemogStageTiming } from './timing';
 
@@ -50,10 +52,15 @@ const signEveryone = (fixture: Fixture) => {
     });
   }
 };
-const seal = async (fixture: Fixture, observe?: SemogStageObserver) => {
+const seal = async (
+  fixture: Fixture,
+  observe?: SemogStageObserver,
+  notifyCompleted?: (notification: SemogSealNotification) => void,
+) => {
   const sealer = createSemogPrismaSealer({
     enabled: true,
     observe,
+    notifyCompleted,
     client: fixture.store.client,
     readPdf: createSemogPdfReader(),
     signer: fixture.signer,
@@ -77,7 +84,19 @@ describe('Semog native seal through decorateSemogPdf', () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
     signEveryone(fixture);
     const timings: SemogStageTiming[] = [];
-    const { result, bytes } = await seal(fixture, (timing) => timings.push(timing));
+    let notificationStage: string | undefined;
+    const notifyCompleted = vi.fn((_notification: SemogSealNotification) => {
+      notificationStage = timings.at(-1)?.stage;
+      // A broken optional adapter cannot change the seal result.
+      throw new Error('optional notification unavailable');
+    });
+    const { result, bytes } = await seal(fixture, (timing) => timings.push(timing), notifyCompleted);
+    expect(notifyCompleted).toHaveBeenCalledOnce();
+    expect(notificationStage).toBe('seal.confirm');
+    expect(notifyCompleted.mock.calls[0][0]).toEqual({ envelopeId: 'env_partial', completedAt: expect.any(String) });
+    expect(fixture.store.native.envelopeUpdates).toMatchObject([
+      { data: { completedAt: new Date(notifyCompleted.mock.calls[0][0].completedAt) } },
+    ]);
     expect(timings.map((timing) => timing.stage)).toEqual([
       'seal.source',
       'seal.read',
@@ -127,7 +146,9 @@ describe('Semog native seal through decorateSemogPdf', () => {
     const original = new Error('injected signing failure');
     vi.spyOn(fixture.signer, 'sign').mockRejectedValueOnce(original);
     const timings: SemogStageTiming[] = [];
-    await expect(seal(fixture, (timing) => timings.push(timing))).rejects.toBe(original);
+    const notifyCompleted = vi.fn();
+    await expect(seal(fixture, (timing) => timings.push(timing), notifyCompleted)).rejects.toBe(original);
+    expect(notifyCompleted).not.toHaveBeenCalled();
     expect(timings.filter((timing) => !timing.ok).map((timing) => timing.stage)).toEqual([
       'seal.signer',
       'seal.sign',
@@ -140,7 +161,9 @@ describe('Semog native seal through decorateSemogPdf', () => {
   it('rejects: stamps only the original pages, keeps signed fields, envelope REJECTED', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
     Object.assign(fixture.envelope.recipients[3], { signingStatus: 'REJECTED', rejectionReason: 'Discordo' });
-    const { result, bytes } = await seal(fixture);
+    const notifyCompleted = vi.fn();
+    const { result, bytes } = await seal(fixture, undefined, notifyCompleted);
+    expect(notifyCompleted).not.toHaveBeenCalled();
     expect(result).toEqual({ envelopeId: 'env_partial', documentoConcluido: false });
     const texts = await pageTexts(bytes);
     expect(texts.length).toBeGreaterThan(2);
@@ -221,6 +244,97 @@ describe('Semog native seal with object storage (S3_PATH)', () => {
     // Original before the transaction, the sealed object right after the commit; none inside (the store rejects it).
     expect(reads).toEqual([originalKey, sealed.data]);
   }, 60000);
+  it('does not await HTTP notification before the outbox ack or the next effect, and preserves committedAt on replay', async () => {
+    const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
+    const completedAt = new Date('2026-11-04T20:11:00.000Z');
+    Object.assign(fixture.envelope, { status: 'COMPLETED', completedAt });
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        requests.push(Buffer.concat(chunks).toString());
+        response.writeHead(503).end();
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const results: string[] = [];
+    let inTransaction = false;
+    const timings: SemogStageTiming[] = [];
+    const notify = createSemogSealNotifier({
+      // listen(0) on TCP returns AddressInfo.
+      env: (key) =>
+        key === 'SEMOG_SELAGEM_AVISO_URL'
+          ? `http://127.0.0.1:${(server.address() as AddressInfo).port}/notify`
+          : 'local-test-token',
+      observe: (timing) => timings.push(timing),
+      onResult: (result) => results.push(result.status),
+    });
+    const calledOutside: boolean[] = [];
+    const sealer = createSemogPrismaSealer({
+      enabled: true,
+      signer: fixture.signer,
+      client: {
+        $transaction: async (fn, options) => {
+          inTransaction = true;
+          try {
+            return await fixture.store.client.$transaction(fn, options);
+          } finally {
+            inTransaction = false;
+          }
+        },
+      },
+      readPdf: createSemogPdfReader(),
+      observe: (timing) => timings.push(timing),
+      notifyCompleted: (event) => {
+        calledOutside.push(!inTransaction && timings.at(-1)?.stage === 'seal.confirm');
+        notify?.(event);
+      },
+    });
+    const effect = {
+      id: 'seal-first',
+      chaveOperacao: '11111111-1111-4111-8111-111111111111',
+      envelopeId: 'env_partial',
+      kind: 'seal',
+      payload: {},
+      lease: '22222222-2222-4222-8222-222222222222',
+      estado: 'leased',
+      tentativa: 1,
+    };
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([{ body: effect }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ body: { ...effect, id: 'seal-next' } }])
+      .mockResolvedValueOnce([]);
+    const worker = createSemogOutboxWorker({
+      enabled: true,
+      client: { $queryRaw: query },
+      deliver: async () => {
+        await sealer.seal(fixture.actor, 'env_partial');
+      },
+    });
+    try {
+      expect(await worker.tick()).toEqual({ delivered: true, empty: false });
+      expect(await worker.tick()).toEqual({ delivered: true, empty: false });
+      // Both acks and the next seal completed while the HTTP requests are still pending.
+      expect(results).toEqual([]);
+      expect(query.mock.calls[1][0].values.at(-1)).toBe(true);
+      expect(query.mock.calls[3][0].values.at(-1)).toBe(true);
+      expect(calledOutside).toEqual([true, true]);
+      await vi.waitFor(() => expect(results).toEqual(['http-503', 'http-503']));
+      expect(requests).toHaveLength(4);
+      expect(
+        requests.every(
+          (body) => body === JSON.stringify({ envelopeId: 'env_partial', completedAt: completedAt.toISOString() }),
+        ),
+      ).toBe(true);
+      expect(fixture.store.native.envelopeUpdates).toHaveLength(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    }
+  }, 60000);
   it('selado que o armazenamento perdeu é regravado da memória logo depois do commit', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
     signEveryone(fixture);
@@ -260,6 +374,36 @@ describe('Semog native seal with object storage (S3_PATH)', () => {
     const bytes = objects.get(sealed.data);
     expect(writes).toBe(2);
     expect(bytes && semogPdfKeyFor(sha256(bytes))).toBe(sealed.data);
+  }, 60000);
+  it('does not notify if the post-commit storage confirmation fails', async () => {
+    const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
+    signEveryone(fixture);
+    const originalKey = semogPdfKeyFor(createHash('sha256').update(fixture.original).digest('hex'));
+    Object.assign(fixture.envelope.envelopeItems[0].documentData, {
+      type: 'S3_PATH',
+      data: originalKey,
+      initialData: originalKey,
+    });
+    const notifyCompleted = vi.fn();
+    const store: SemogPdfStore = {
+      read: async () => fixture.original,
+      write: async () => undefined,
+      confirm: () => Promise.reject(new Error('storage confirmation unavailable')),
+    };
+    const sealer = createSemogPrismaSealer({
+      enabled: true,
+      client: fixture.store.client,
+      readPdf: createSemogPdfReader(store),
+      pdfStore: store,
+      signer: fixture.signer,
+      getDocumentI18n: fixture.getDocumentI18n,
+      notifyCompleted,
+    });
+    await expect(sealer.seal(fixture.actor, 'env_partial')).rejects.toMatchObject({
+      code: 'SEMOG_STORAGE_ENSURE_FAILED',
+    });
+    expect(notifyCompleted).not.toHaveBeenCalled();
+    expect(fixture.store.native.envelopeUpdates).toMatchObject([{ data: { status: 'COMPLETED' } }]);
   }, 60000);
   it('upload do selado que não responde: a selagem falha dentro do prazo em vez de ficar pendurada', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });

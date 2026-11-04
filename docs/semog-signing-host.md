@@ -203,6 +203,14 @@ em vez de repetir a leitura do corpo quando o checksum está disponível.
 Configuração do volume, garantias, limites e ensaio:
 [PDF sem releitura redundante](semog/2026-11-04-pdf-sem-releitura.md).
 
+O aviso opcional de conclusão ao semogapp é habilitado somente com
+`SEMOG_SELAGEM_AVISO_URL` e `SEMOG_SELAGEM_AVISO_TOKEN`. Depois de `seal.confirm`,
+fora da transação, envia apenas para `COMPLETED`, sem aguardar a resposta nem
+condicionar o ack ou o próximo efeito. Prazo de 1,5 s por tentativa, uma nova
+tentativa em rede/5xx e no máximo dois avisos ativos por host, sem fila.
+Contrato, limites e configuração:
+[aviso de fim da selagem](semog/2026-11-04-aviso-fim-selagem.md).
+
 O consumo usa lease de 120 segundos, confirmação após commit e até oito
 tentativas duráveis. Falha é reportada no log sem corpo, token ou CPF. O loop não
 sobrepõe chamadas. SIGTERM/SIGINT fecham o HTTP e aguardam a chamada em andamento;

@@ -58,6 +58,7 @@ export type SemogStage =
   | 'seal.complete'
   | 'seal.transaction'
   | 'seal.confirm'
+  | 'seal.notify'
   | 'get.metadata'
   | 'pdf.metadata'
   | 'get.transaction'

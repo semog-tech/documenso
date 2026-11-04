@@ -20,6 +20,7 @@ import { createSemogPartialSealService } from './partial-seal-service';
 import type { SemogPdfStore } from './pdf-store';
 import { semogPdfKeyFor } from './pdf-store';
 import { createSemogSigningPostgresClient, createSemogSigningRepository } from './repository';
+import type { SemogSealNotification } from './seal-notify';
 import { createSemogPrismaSealer } from './sealing';
 import { createSemogSigningService } from './service';
 import type { SemogStageObserver } from './timing';
@@ -38,6 +39,7 @@ type Dependencies = {
   observe?: SemogStageObserver;
   /** `suppress` only once the outbox migration accepts the final 'suprimido' state (see the host). */
   externalEffects?: SemogExternalEffects;
+  notifyCompleted?: (notification: SemogSealNotification) => void;
 };
 /** Explicit host composition. Creating this object mounts no route, starts no worker and reads no environment. */
 export const createSemogSigningRuntime = (dependencies: Dependencies) => {
@@ -86,6 +88,7 @@ export const createSemogSigningRuntime = (dependencies: Dependencies) => {
     signer: dependencies.signer,
     rejectionFont: dependencies.rejectionFont,
     getDocumentI18n: dependencies.getDocumentI18n,
+    notifyCompleted: dependencies.notifyCompleted,
   });
   // Same signer, font and catalogue as the native seal; the round PDF never replaces the envelope document.
   const partialSeal = createSemogPartialSealService({

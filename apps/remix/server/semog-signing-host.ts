@@ -8,6 +8,7 @@ import { createSemogPdfCacheWarningObserver } from '@documenso/lib/server-only/s
 import { createSemogPdfDiskCache } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache';
 import { semogPdfDiskCacheOptionsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-disk-cache-env';
 import { createSemogS3PdfStore, semogS3SettingsFromEnv } from '@documenso/lib/server-only/semog-signing/pdf-store-s3';
+import { createSemogSealNotifier } from '@documenso/lib/server-only/semog-signing/seal-notify';
 import type { SemogStageObserver } from '@documenso/lib/server-only/semog-signing/timing';
 import { env } from '@documenso/lib/utils/env';
 import { getTranslations } from '@documenso/lib/utils/i18n';
@@ -89,6 +90,11 @@ const initializeHost = async () => {
     externalEffects: 'suppress',
     onError: () => logger.error('Semog signing worker failed; inspect its durable outbox.'),
     observe: observeSemogStage,
+    notifyCompleted: createSemogSealNotifier({
+      env,
+      observe: observeSemogStage,
+      onResult: (result) => logger.info({ semogSealNotify: result }, 'Semog seal notification'),
+    }),
   });
   if (env('SEMOG_SIGNING_WORKER_ENABLED') === 'true') {
     host.start();
