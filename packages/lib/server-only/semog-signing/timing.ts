@@ -1,5 +1,29 @@
-/** Manifestation stages measured for the host log. Carries no person, token or document data. */
+/** Bridge stages measured for the host log. Carries no person, token or document data. */
 export type SemogStage =
+  | 'seal.delivery'
+  | 'seal.actor'
+  | 'seal.receipt-check'
+  | 'seal.total'
+  | 'seal.source'
+  | 'seal.read'
+  | 'seal.preread'
+  | 'seal.lock'
+  | 'seal.envelope'
+  | 'seal.audit'
+  | 'seal.original-load'
+  | 'seal.render'
+  | 'seal.pdf-load'
+  | 'seal.decorate'
+  | 'seal.pdf-save'
+  | 'seal.normalize'
+  | 'seal.sign'
+  | 'seal.signer'
+  | 'seal.storage'
+  | 'seal.document-write'
+  | 'seal.receipt-write'
+  | 'seal.complete'
+  | 'seal.transaction'
+  | 'seal.confirm'
   | 'get.metadata'
   | 'pdf.metadata'
   | 'get.transaction'
@@ -32,12 +56,20 @@ export const timeSemogStage = async <T>(
 ): Promise<T> => {
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
+  const report = (ok: boolean, value?: T) => {
+    try {
+      observe?.({ stage, ms: elapsed(), ok, ...(ok && value !== undefined ? details?.(value) : {}) });
+    } catch {
+      // Telemetry is best effort: observer/formatting failures must not change a durable operation's result.
+      return;
+    }
+  };
   try {
     const value = await run();
-    observe?.({ stage, ms: elapsed(), ok: true, ...details?.(value) });
+    report(true, value);
     return value;
   } catch (error) {
-    observe?.({ stage, ms: elapsed(), ok: false });
+    report(false);
     throw error;
   }
 };

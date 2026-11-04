@@ -499,6 +499,7 @@ const largePdfScenario = async (database: PrismaClient, owner: Team, services: S
   }
   const key = await sign(runtime, owner, envelope, 4, deadline);
   const host = createSemogHost({
+    observe: (timing) => console.log(JSON.stringify({ rehearsal: 'large-pdf-seal', ...timing })),
     enabled: true,
     client: database,
     signer: services.signer,

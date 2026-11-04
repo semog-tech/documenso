@@ -17,9 +17,12 @@ import type { SemogPdfReader } from './initial-pdf';
 import type { SemogPdfStore } from './pdf-store';
 import { persistSemogDerivedPdf, recordSemogWrites } from './pdf-store';
 import type { SemogActor } from './service';
+import type { SemogStageObserver } from './timing';
+import { timeSemogStage } from './timing';
 
 type Dependencies = {
   enabled?: boolean;
+  observe?: SemogStageObserver;
   client: SemogPrismaTransactionRunner;
   readPdf: SemogPdfReader;
   pdfStore?: SemogPdfStore;
@@ -117,6 +120,7 @@ const insertNativeFieldPages = async (pdf: PDF, fields: FieldWithSignature[]) =>
 };
 type DecorateOptions = {
   fields: FieldWithSignature[];
+  observe?: SemogStageObserver;
   signer: Signer;
   rejectionFont: Uint8Array | null;
   documentPages: Uint8Array[];
@@ -125,50 +129,84 @@ type DecorateOptions = {
   /** Signature /Reason; the native seal keeps the stock value. */
   reason?: string;
 };
+/** The library's Signer port signs CMS attributes; PDF serialization/hash/CMS assembly stay in seal.sign. */
+const observeSigner = (signer: Signer, observe: SemogStageObserver | undefined): Signer => ({
+  get certificate() {
+    return signer.certificate;
+  },
+  get certificateChain() {
+    return signer.certificateChain;
+  },
+  get keyType() {
+    return signer.keyType;
+  },
+  get signatureAlgorithm() {
+    return signer.signatureAlgorithm;
+  },
+  sign: (data, algorithm) => timeSemogStage(observe, 'seal.signer', () => signer.sign(data, algorithm)),
+});
 export const decorateSemogPdf = async (bytes: Uint8Array, options: DecorateOptions) => {
-  const pdf = await PDF.load(bytes);
-  pdf.flattenAll();
-  pdf.upgradeVersion('1.7');
-  if (options.rejectionFont !== null) {
-    stampRejected(pdf, options.rejectionFont);
-  }
-  for (const page of options.documentPages) {
-    const appendix = await PDF.load(page);
-    await pdf.copyPagesFrom(
-      appendix,
-      Array.from({ length: appendix.getPageCount() }, (_, index) => index),
-    );
-  }
-  await insertNativeFieldPages(pdf, options.fields);
-  options.stampAllPages?.(pdf);
-  pdf.flattenAll();
-  const normalized = await PDF.load(await pdf.save({ useXRefStream: true }));
-  return (
-    await normalized.sign({
-      signer: options.signer,
-      reason: options.reason ?? 'Signed by Documenso',
-      subFilter: 'ETSI.CAdES.detached',
-    })
-  ).bytes;
+  const observe = options.observe;
+  const pdf = await timeSemogStage(observe, 'seal.pdf-load', () => PDF.load(bytes));
+  await timeSemogStage(observe, 'seal.decorate', async () => {
+    pdf.flattenAll();
+    pdf.upgradeVersion('1.7');
+    if (options.rejectionFont !== null) {
+      stampRejected(pdf, options.rejectionFont);
+    }
+    for (const page of options.documentPages) {
+      const appendix = await PDF.load(page);
+      await pdf.copyPagesFrom(
+        appendix,
+        Array.from({ length: appendix.getPageCount() }, (_, index) => index),
+      );
+    }
+    await insertNativeFieldPages(pdf, options.fields);
+    options.stampAllPages?.(pdf);
+    pdf.flattenAll();
+  });
+  const saved = await timeSemogStage(observe, 'seal.pdf-save', () => pdf.save({ useXRefStream: true }));
+  const normalized = await timeSemogStage(observe, 'seal.normalize', () => PDF.load(saved));
+  return await timeSemogStage(
+    observe,
+    'seal.sign',
+    async () =>
+      (
+        await normalized.sign({
+          signer: observe ? observeSigner(options.signer, observe) : options.signer,
+          reason: options.reason ?? 'Signed by Documenso',
+          subFilter: 'ETSI.CAdES.detached',
+        })
+      ).bytes,
+  );
 };
 
-export const readSemogSealingEnvelope = async (tx: Prisma.TransactionClient, actor: SemogActor, envelopeId: string) => {
-  const lock = await tx.$queryRaw<{ id: string }[]>(
-    Prisma.sql`SELECT id FROM public."Envelope" WHERE id=${envelopeId} AND "teamId"=${actor.teamId} FOR UPDATE`,
+export const readSemogSealingEnvelope = async (
+  tx: Prisma.TransactionClient,
+  actor: SemogActor,
+  envelopeId: string,
+  observe?: SemogStageObserver,
+) => {
+  const lock = await timeSemogStage(observe, 'seal.lock', () =>
+    tx.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT id FROM public."Envelope" WHERE id=${envelopeId} AND "teamId"=${actor.teamId} FOR UPDATE`,
+    ),
   );
   if (lock.length !== 1) {
     throw new AppError(AppErrorCode.NOT_FOUND, { statusCode: 404 });
   }
-  return await tx.envelope.findUniqueOrThrow({
-    where: { id: envelopeId },
-    include: {
-      recipients: true,
-      documentMeta: true,
-      user: { select: { name: true, email: true } },
-      fields: { include: { signature: true } },
-      envelopeItems: { include: { documentData: true } },
-    },
-  });
+  return await timeSemogStage(observe, 'seal.envelope', () =>
+    tx.envelope.findUniqueOrThrow({
+      where: { id: envelopeId },
+      include: {
+        recipients: true,
+        documentMeta: true,
+        user: { select: { name: true, email: true } },
+        fields: { include: { signature: true } },
+        envelopeItems: { include: { documentData: true } },
+      },
+    }),
+  );
 };
 export type SemogSealingEnvelope = Awaited<ReturnType<typeof readSemogSealingEnvelope>>;
 /** Original PDFs read before a seal transaction, keyed by DocumentData id, with the INITIAL_DATA they came from. */
@@ -179,20 +217,25 @@ export const prereadSemogOriginals = async (
   readPdf: SemogPdfReader,
   actor: SemogActor,
   envelopeId: string,
+  observe?: SemogStageObserver,
 ): Promise<SemogPrereadOriginals> => {
-  const items = await readSemogOutside(client, (tx) =>
-    tx.envelopeItem.findMany({
-      where: { envelopeId, envelope: { teamId: actor.teamId, status: 'PENDING' } },
-      select: { documentData: { select: { id: true, type: true, initialData: true } } },
-    }),
+  const items = await timeSemogStage(observe, 'seal.source', () =>
+    readSemogOutside(client, (tx) =>
+      tx.envelopeItem.findMany({
+        where: { envelopeId, envelope: { teamId: actor.teamId, status: 'PENDING' } },
+        select: { documentData: { select: { id: true, type: true, initialData: true } } },
+      }),
+    ),
   );
   const originals: SemogPrereadOriginals = new Map();
   for (const { documentData } of items) {
-    const bytes = await readPdf({
-      documentDataId: documentData.id,
-      type: documentData.type,
-      data: documentData.initialData,
-    });
+    const bytes = await timeSemogStage(observe, 'seal.read', () =>
+      readPdf({
+        documentDataId: documentData.id,
+        type: documentData.type,
+        data: documentData.initialData,
+      }),
+    );
     originals.set(documentData.id, { initialData: documentData.initialData, bytes });
   }
   return originals;
@@ -237,18 +280,21 @@ const createItemPdf = async (
   originals: SemogPrereadOriginals,
 ) => {
   const pdf = takeSemogOriginal(originals, item.documentData);
-  const original = await PDF.load(pdf);
+  const original = await timeSemogStage(dependencies.observe, 'seal.original-load', () => PDF.load(pdf));
   const lastPage = original.getPage(original.getPageCount() - 1);
   if (!lastPage) {
     throw denied();
   }
-  const documentPages = await renderSemogDocumentPages(
-    tx,
-    { ...envelope, status: rejected ? 'REJECTED' : 'COMPLETED' },
-    { width: lastPage.width, height: lastPage.height },
-    i18n,
+  const documentPages = await timeSemogStage(dependencies.observe, 'seal.render', () =>
+    renderSemogDocumentPages(
+      tx,
+      { ...envelope, status: rejected ? 'REJECTED' : 'COMPLETED' },
+      { width: lastPage.width, height: lastPage.height },
+      i18n,
+    ),
   );
   return await decorateSemogPdf(pdf, {
+    observe: dependencies.observe,
     fields: envelope.fields.filter((field) => field.envelopeItemId === item.id),
     signer,
     rejectionFont: rejected ? (dependencies.rejectionFont ?? null) : null,
@@ -268,24 +314,31 @@ const persistSealedItems = async (
     const signed = await createItemPdf(tx, dependencies, envelope, signer, rejected, i18n, item, originals);
     // An object-stored original gets an object-stored seal (written here, before commit, under its content
     // address); the original stays referenced by its own key, never copied. Inline originals keep inline seals.
-    const stored = await persistSemogDerivedPdf(dependencies.pdfStore, item.documentData.type, signed);
-    const data = await tx.documentData.create({
-      data: { type: stored.type, data: stored.data, initialData: item.documentData.initialData },
+    const stored = await timeSemogStage(dependencies.observe, 'seal.storage', () =>
+      persistSemogDerivedPdf(dependencies.pdfStore, item.documentData.type, signed),
+    );
+    const data = await timeSemogStage(dependencies.observe, 'seal.document-write', async () => {
+      const data = await tx.documentData.create({
+        data: { type: stored.type, data: stored.data, initialData: item.documentData.initialData },
+      });
+      await tx.envelopeItem.update({ where: { id: item.id }, data: { documentDataId: data.id } });
+      return data;
     });
-    await tx.envelopeItem.update({ where: { id: item.id }, data: { documentDataId: data.id } });
-    const receipt = {
-      documentDataId: data.id,
-      hashPdf: createHash('sha256').update(signed).digest('hex'),
-      metadata: {
-        type: stored.type,
-        hashInitialDataValue: createHash('sha256').update(item.documentData.initialData).digest('hex'),
-        hashDataValue: createHash('sha256').update(stored.data).digest('hex'),
-        hashOriginal: createHash('sha256').update(takeSemogOriginal(originals, item.documentData)).digest('hex'),
-        bytes: signed.byteLength,
-      },
-    };
-    await tx.$executeRaw(Prisma.sql`UPDATE semog_bridge.operations SET execucao=jsonb_set(execucao,'{selagem}',${JSON.stringify(receipt)}::jsonb)
+    await timeSemogStage(dependencies.observe, 'seal.receipt-write', async () => {
+      const receipt = {
+        documentDataId: data.id,
+        hashPdf: createHash('sha256').update(signed).digest('hex'),
+        metadata: {
+          type: stored.type,
+          hashInitialDataValue: createHash('sha256').update(item.documentData.initialData).digest('hex'),
+          hashDataValue: createHash('sha256').update(stored.data).digest('hex'),
+          hashOriginal: createHash('sha256').update(takeSemogOriginal(originals, item.documentData)).digest('hex'),
+          bytes: signed.byteLength,
+        },
+      };
+      await tx.$executeRaw(Prisma.sql`UPDATE semog_bridge.operations SET execucao=jsonb_set(execucao,'{selagem}',${JSON.stringify(receipt)}::jsonb)
       WHERE "envelopeId"=${envelope.id} AND estado='concluida' AND execucao IS NOT NULL`);
+    });
   }
 };
 const finishSeal = async (
@@ -312,7 +365,7 @@ const sealLocked = async (
   envelopeId: string,
   originals: SemogPrereadOriginals,
 ) => {
-  const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId);
+  const envelope = await readSemogSealingEnvelope(tx, actor, envelopeId, dependencies.observe);
   if (envelope.status === 'COMPLETED' || envelope.status === 'REJECTED') {
     return { envelopeId, documentoConcluido: envelope.status === 'COMPLETED' };
   }
@@ -332,28 +385,37 @@ const sealLocked = async (
     data: { transactionId: randomUUID() },
   });
   // The real completion audit belongs to this transaction. Rendering/signing failure rolls it back.
-  await tx.documentAuditLog.create({ data: { envelopeId, ...event } });
+  await timeSemogStage(dependencies.observe, 'seal.audit', () =>
+    tx.documentAuditLog.create({ data: { envelopeId, ...event } }),
+  );
   await persistSealedItems(tx, dependencies, envelope, signer, rejected, i18n, originals);
-  return await finishSeal(tx, envelopeId, rejected, dependencies.externalEffects);
+  return await timeSemogStage(dependencies.observe, 'seal.complete', () =>
+    finishSeal(tx, envelopeId, rejected, dependencies.externalEffects),
+  );
 };
 export const createSemogPrismaSealer = (dependencies: Dependencies) => ({
-  seal: async (actor: SemogActor, envelopeId: string) => {
-    if (dependencies.enabled !== true || !dependencies.signer) {
-      throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
-    }
-    const signer = dependencies.signer;
-    const originals = await prereadSemogOriginals(dependencies.client, dependencies.readPdf, actor, envelopeId);
-    const writes = recordSemogWrites(dependencies.pdfStore);
-    const result = await dependencies.client.$transaction(
-      (tx) => sealLocked({ ...dependencies, pdfStore: writes.store }, signer, tx, actor, envelopeId, originals),
-      {
-        isolationLevel: 'Serializable',
-        timeout: 60000,
-        maxWait: 10000,
-      },
-    );
-    // After the commit, outside any transaction: the sealed objects are read back and proven by content.
-    await writes.confirm();
-    return result;
-  },
+  seal: (actor: SemogActor, envelopeId: string) =>
+    timeSemogStage(dependencies.observe, 'seal.total', async () => {
+      if (dependencies.enabled !== true || !dependencies.signer) {
+        throw new AppError(AppErrorCode.NOT_SETUP, { statusCode: 503 });
+      }
+      const signer = dependencies.signer;
+      const originals = await timeSemogStage(dependencies.observe, 'seal.preread', () =>
+        prereadSemogOriginals(dependencies.client, dependencies.readPdf, actor, envelopeId, dependencies.observe),
+      );
+      const writes = recordSemogWrites(dependencies.pdfStore);
+      const result = await timeSemogStage(dependencies.observe, 'seal.transaction', () =>
+        dependencies.client.$transaction(
+          (tx) => sealLocked({ ...dependencies, pdfStore: writes.store }, signer, tx, actor, envelopeId, originals),
+          {
+            isolationLevel: 'Serializable',
+            timeout: 60000,
+            maxWait: 10000,
+          },
+        ),
+      );
+      // After the commit, outside any transaction: the sealed objects are read back and proven by content.
+      await timeSemogStage(dependencies.observe, 'seal.confirm', () => writes.confirm());
+      return result;
+    }),
 });
