@@ -1,4 +1,5 @@
 import type { I18n } from '@lingui/core';
+import { msg } from '@lingui/core/macro';
 import type Konva from 'konva';
 import { DateTime } from 'luxon';
 
@@ -81,3 +82,6 @@ export const fitPdfWords = (text: Konva.Text) => {
     text.fontSize((0.98 * text.fontSize() * text.width()) / longest);
   }
 };
+
+export const pdfDocumentIdLabel = (i18n: I18n): string =>
+  semogPdfAtivo(i18n) ? 'Identificador do documento' : i18n._(msg`Envelope ID`);

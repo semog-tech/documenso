@@ -285,7 +285,7 @@ export const diffDocumentMetaChanges = (
  * Provide a userId to prefix the action with the user, example 'X did Y'.
  */
 export const formatDocumentAuditLogAction = (i18n: I18n, auditLog: TDocumentAuditLog, userId?: number) => {
-  const isCurrentUser = userId === auditLog.userId;
+  const isCurrentUser = userId !== undefined && userId === auditLog.userId;
   const user = auditLog.name || auditLog.email || '';
 
   const prefix = isCurrentUser ? i18n._(msg`You`) : user || '';

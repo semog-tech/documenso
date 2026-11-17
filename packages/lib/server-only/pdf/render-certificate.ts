@@ -19,7 +19,7 @@ import { RECIPIENT_ROLE_SIGNING_REASONS, RECIPIENT_ROLES_DESCRIPTION } from '../
 import type { TDocumentAuditLogBaseSchema } from '../../types/document-audit-logs';
 import { svgToPng } from '../../utils/images/svg-to-png';
 import { ensureFontLibrary } from './helpers';
-import { formatPdfDate, semogPdfAtivo } from './semog-pdf-ptbr';
+import { formatPdfDate, pdfDocumentIdLabel, semogPdfAtivo } from './semog-pdf-ptbr';
 
 type ColumnWidths = [number, number, number];
 
@@ -817,7 +817,7 @@ export async function renderCertificate({
     const footerText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelopeId}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelopeId}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,
@@ -845,7 +845,7 @@ export async function renderCertificate({
     const overflowFooterText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelopeId}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelopeId}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,

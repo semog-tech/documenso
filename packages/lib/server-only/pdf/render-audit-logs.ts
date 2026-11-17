@@ -21,7 +21,7 @@ import type { TDocumentAuditLog } from '../../types/document-audit-logs';
 import { DOCUMENT_AUDIT_LOG_TYPE } from '../../types/document-audit-logs';
 import { formatDocumentAuditLogAction } from '../../utils/document-audit-logs';
 import { ensureFontLibrary } from './helpers';
-import { eventoSemogPtBr, fitPdfWords, formatPdfDate, semogPdfAtivo } from './semog-pdf-ptbr';
+import { eventoSemogPtBr, fitPdfWords, formatPdfDate, pdfDocumentIdLabel, semogPdfAtivo } from './semog-pdf-ptbr';
 
 export type AuditLogRecipient = {
   id: number;
@@ -212,7 +212,7 @@ const renderOverviewCard = (options: RenderOverviewCardOptions) => {
 
   const envelopeIdLabel = renderOverviewCardLabels({
     semogPtBr: semogPdfAtivo(i18n),
-    label: i18n._(msg`Envelope ID`),
+    label: pdfDocumentIdLabel(i18n),
     text: envelope.id,
     width: columnWidth,
   });
@@ -551,7 +551,7 @@ const renderPages = (options: RenderPagesOptions) => {
       y: 0,
       height: pageTopMargin,
       verticalAlign: 'middle',
-      text: i18n._(msg`Audit Log`),
+      text: semogPdfAtivo(i18n) ? 'Registro de auditoria' : i18n._(msg`Audit Log`),
       fill: textForeground,
       fontFamily: 'Inter',
       fontSize: titleFontSize,
@@ -647,7 +647,7 @@ export async function renderAuditLogs({
     const footerText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelope.id}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelope.id}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,
@@ -692,7 +692,7 @@ export async function renderAuditLogs({
     const overflowFooterText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelope.id}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelope.id}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,
