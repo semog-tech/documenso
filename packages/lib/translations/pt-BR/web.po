@@ -528,173 +528,173 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} added a field"
-msgstr ""
+msgstr "{user} adicionou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} added a recipient"
-msgstr ""
+msgstr "{user} adicionou um participante"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} approved the document"
-msgstr ""
+msgstr "{user} aprovou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} authenticated with the signing provider"
-msgstr ""
+msgstr "{user} autenticou-se no provedor de assinatura"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} authorised the remote signature"
-msgstr ""
+msgstr "{user} autorizou a assinatura remota"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} cancelled the document"
-msgstr ""
+msgstr "{user} cancelou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} CC'd the document"
-msgstr ""
+msgstr "{user} recebeu uma cópia do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} completed their task"
-msgstr ""
+msgstr "{user} concluiu sua tarefa"
 
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} created an envelope item with title {0}"
-msgstr ""
+msgstr "{user} incluiu o documento com título {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} created the document"
-msgstr ""
+msgstr "{user} criou o documento"
 
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} deleted an envelope item with title {0}"
-msgstr ""
+msgstr "{user} excluiu o documento com título {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} deleted the document"
-msgstr ""
+msgstr "{user} excluiu o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} failed to validate a 2FA token for the document"
-msgstr ""
+msgstr "{user} não validou o código de dois fatores do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} moved the document to team"
-msgstr ""
+msgstr "{user} transferiu o documento para a equipe"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} opened the document"
-msgstr ""
+msgstr "{user} abriu o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} prefilled a field"
-msgstr ""
+msgstr "{user} preencheu previamente um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} rejected the document"
-msgstr ""
+msgstr "{user} recusou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} removed a field"
-msgstr ""
+msgstr "{user} removeu um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} removed a recipient"
-msgstr ""
+msgstr "{user} removeu um participante"
 
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} replaced the PDF for envelope item {0}"
-msgstr ""
+msgstr "{user} substituiu o PDF do documento {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} requested a 2FA token for the document"
-msgstr ""
+msgstr "{user} solicitou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} requested a remote signature"
-msgstr ""
+msgstr "{user} solicitou uma assinatura remota"
 
 #. placeholder {0}: data.recipientEmail
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} resent an email to {0}"
-msgstr ""
+msgstr "{user} reenviou um e-mail para {0}"
 
 #. placeholder {0}: data.recipientEmail
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} sent an email to {0}"
-msgstr ""
+msgstr "{user} enviou um e-mail para {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} sent the document"
-msgstr ""
+msgstr "{user} enviou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} signed a field"
-msgstr ""
+msgstr "{user} assinou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} signed the document"
-msgstr ""
+msgstr "{user} assinou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} unsigned a field"
-msgstr ""
+msgstr "{user} removeu a assinatura de um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated a field"
-msgstr ""
+msgstr "{user} atualizou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated a recipient"
-msgstr ""
+msgstr "{user} atualizou um participante"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated an envelope item"
-msgstr ""
+msgstr "{user} atualizou um documento incluído"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document"
-msgstr ""
+msgstr "{user} atualizou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document access auth requirements"
-msgstr ""
+msgstr "{user} atualizou os requisitos de autenticação de acesso ao documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document external ID"
-msgstr ""
+msgstr "{user} atualizou a referência externa do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document signing auth requirements"
-msgstr ""
+msgstr "{user} atualizou os requisitos de autenticação da assinatura"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document title"
-msgstr ""
+msgstr "{user} atualizou o título do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} updated the document visibility"
-msgstr ""
+msgstr "{user} atualizou a visibilidade do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} validated a 2FA token for the document"
-msgstr ""
+msgstr "{user} validou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user} viewed the document"
-msgstr ""
+msgstr "{user} visualizou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user}'s remote signature was applied"
-msgstr ""
+msgstr "A assinatura remota de {user} foi aplicada"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "{user}'s signing provider authentication failed"
-msgstr ""
+msgstr "A autenticação de {user} no provedor de assinatura falhou"
 
 #: apps/remix/app/components/tables/internal-audit-log-table.tsx
 #: packages/lib/server-only/pdf/render-audit-logs.ts
@@ -4390,7 +4390,7 @@ msgstr ""
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Document cancelled"
-msgstr ""
+msgstr "Documento cancelado"
 
 #: apps/remix/app/routes/_recipient+/sign.$token+/_index.tsx
 #: apps/remix/app/routes/_recipient+/sign.$token+/_index.tsx
@@ -5240,7 +5240,7 @@ msgstr ""
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Email resent"
-msgstr ""
+msgstr "E-mail reenviado"
 
 #: apps/remix/app/components/dialogs/envelope-distribute-dialog.tsx
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-settings-dialog.tsx
@@ -5256,7 +5256,7 @@ msgstr ""
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Email sent"
-msgstr ""
+msgstr "E-mail enviado"
 
 #: apps/remix/app/routes/_unauthenticated+/check-email.tsx
 msgid "Email sent!"
@@ -5431,7 +5431,7 @@ msgstr "Documento Anexo"
 
 #: packages/lib/server-only/pdf/render-audit-logs.ts
 msgid "Enclosed Documents"
-msgstr ""
+msgstr "Documentos incluídos"
 
 #: apps/remix/app/components/forms/email-transport-form.tsx
 msgid "Endpoint (optional)"
@@ -5584,12 +5584,12 @@ msgstr "Item do envelope excluído"
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Envelope item PDF replaced"
-msgstr ""
+msgstr "PDF do documento substituído"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Envelope item updated"
-msgstr ""
+msgstr "Documento incluído atualizado"
 
 #: apps/remix/app/components/dialogs/envelope-redistribute-dialog.tsx
 msgid "Envelope resent"
@@ -9081,23 +9081,23 @@ msgstr "Autenticação de ação do destinatário"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient approved the document"
-msgstr ""
+msgstr "O participante aprovou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient authenticated with the signing provider"
-msgstr ""
+msgstr "O participante autenticou-se no provedor de assinatura"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient authorised the remote signature"
-msgstr ""
+msgstr "O participante autorizou a assinatura remota"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient CC'd the document"
-msgstr ""
+msgstr "O participante recebeu uma cópia do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient completed their task"
-msgstr ""
+msgstr "O participante concluiu sua tarefa"
 
 #: apps/remix/app/components/forms/subscription-claim-form.tsx
 #: apps/remix/app/routes/_authenticated+/admin+/organisations.$id.tsx
@@ -9110,7 +9110,7 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient failed to validate a 2FA token for the document"
-msgstr ""
+msgstr "O participante não validou o código de dois fatores do documento"
 
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-fields-page.tsx
 #: packages/ui/primitives/document-flow/field-item.tsx
@@ -9119,11 +9119,11 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient rejected the document"
-msgstr ""
+msgstr "O participante recusou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient rejected the document externally"
-msgstr ""
+msgstr "O participante recusou o documento externamente"
 
 #: apps/remix/app/components/general/admin-global-settings-section.tsx
 msgid "Recipient removed"
@@ -9135,11 +9135,11 @@ msgstr "E-mail de destinatário removido"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient requested a 2FA token for the document"
-msgstr ""
+msgstr "O participante solicitou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient requested a remote signature"
-msgstr ""
+msgstr "O participante solicitou uma assinatura remota"
 
 #: apps/remix/app/components/general/admin-global-settings-section.tsx
 msgid "Recipient signed"
@@ -9151,7 +9151,7 @@ msgstr "E-mail de destinatário assinado"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient signed the document"
-msgstr ""
+msgstr "O participante assinou o documento"
 
 #: apps/remix/app/components/general/admin-global-settings-section.tsx
 msgid "Recipient signing request"
@@ -9164,7 +9164,7 @@ msgstr "E-mail de solicitação de assinatura do destinatário"
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "Recipient signing window expired"
-msgstr ""
+msgstr "Prazo de assinatura do participante encerrado"
 
 #: apps/remix/app/components/tables/admin-document-recipient-item-table.tsx
 msgid "Recipient updated"
@@ -9172,19 +9172,19 @@ msgstr "Destinatário atualizado"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient validated a 2FA token for the document"
-msgstr ""
+msgstr "O participante validou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient viewed the document"
-msgstr ""
+msgstr "O participante visualizou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient's remote signature was applied"
-msgstr ""
+msgstr "A assinatura remota do participante foi aplicada"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Recipient's signing provider authentication failed"
-msgstr ""
+msgstr "A autenticação do participante no provedor de assinatura falhou"
 
 #: apps/remix/app/components/embed/authoring/configure-document-recipients.tsx
 #: apps/remix/app/components/general/document/document-page-view-recipients.tsx
@@ -10647,7 +10647,7 @@ msgstr ""
 #: packages/lib/utils/document-audit-logs.ts
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Signing window expired for {0}"
-msgstr ""
+msgstr "Prazo de assinatura encerrado para {0}"
 
 #: apps/remix/app/components/forms/signup.tsx
 msgid "Signup is currently disabled or not available for your email domain."
@@ -11570,7 +11570,7 @@ msgstr "O proprietário do documento foi notificado sobre sua decisão. Eles pod
 #: packages/lib/utils/document-audit-logs.ts
 msgctxt "Audit log format"
 msgid "The document ownership was delegated to {0} on behalf of {1}"
-msgstr ""
+msgstr "A responsabilidade pelo documento foi delegada a {0} em nome de {1}"
 
 #: apps/remix/app/components/dialogs/envelope-cancel-dialog.tsx
 #: apps/remix/app/components/dialogs/envelopes-bulk-cancel-dialog.tsx
@@ -11583,20 +11583,20 @@ msgstr "O documento foi criado, mas não pôde ser enviado aos destinatários."
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "The document was rejected externally by {onBehalfOf} on behalf of {user}"
-msgstr ""
+msgstr "O documento foi recusado externamente por {onBehalfOf} em nome de {user}"
 
 #: packages/lib/utils/document-audit-logs.ts
 #: packages/lib/utils/document-audit-logs.ts
 msgid "The document was rejected externally by {onBehalfOf} on behalf of the recipient"
-msgstr ""
+msgstr "O documento foi recusado externamente por {onBehalfOf} em nome do participante"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "The document was rejected externally on behalf of {user}"
-msgstr ""
+msgstr "O documento foi recusado externamente em nome de {user}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "The document was rejected externally on behalf of the recipient"
-msgstr ""
+msgstr "O documento foi recusado externamente em nome do participante"
 
 #: apps/remix/app/components/dialogs/envelope-delete-dialog.tsx
 msgid "The document will be hidden from your account"
@@ -14107,15 +14107,15 @@ msgstr "Você"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You added a field"
-msgstr ""
+msgstr "Você adicionou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You added a recipient"
-msgstr ""
+msgstr "Você adicionou um participante"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You approved the document"
-msgstr ""
+msgstr "Você aprovou o documento"
 
 #: apps/remix/app/components/dialogs/envelope-cancel-dialog.tsx
 msgid "You are about to cancel <0>\"{title}\"</0>"
@@ -14302,11 +14302,11 @@ msgstr "Você não está autorizado a redefinir a autenticação de dois fatores
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You authenticated with the signing provider"
-msgstr ""
+msgstr "Você autenticou-se no provedor de assinatura"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You authorised the remote signature"
-msgstr ""
+msgstr "Você autorizou a assinatura remota"
 
 #: apps/remix/app/components/dialogs/ai-field-detection-dialog.tsx
 msgid "You can add fields manually in the editor."
@@ -14371,7 +14371,7 @@ msgstr "Você pode visualizar o documento e seu status clicando no botão abaixo
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You cancelled the document"
-msgstr ""
+msgstr "Você cancelou o documento"
 
 #: apps/remix/app/components/general/envelope-editor/envelope-editor-recipient-form.tsx
 #: packages/ui/primitives/document-flow/add-signers.tsx
@@ -14422,20 +14422,20 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You CC'd the document"
-msgstr ""
+msgstr "Você recebeu uma cópia do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You completed your task"
-msgstr ""
+msgstr "Você concluiu sua tarefa"
 
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You created an envelope item with title {0}"
-msgstr ""
+msgstr "Você incluiu o documento com título {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You created the document"
-msgstr ""
+msgstr "Você criou o documento"
 
 #. placeholder {0}: i18n.date(periodEnd)
 #: apps/remix/app/routes/_authenticated+/o.$orgUrl.settings.billing.tsx
@@ -14462,11 +14462,11 @@ msgstr "Você atualmente não tem acesso a nenhuma equipe dentro desta organiza�
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You deleted an envelope item with title {0}"
-msgstr ""
+msgstr "Você excluiu o documento com título {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You deleted the document"
-msgstr ""
+msgstr "Você excluiu o documento"
 
 #: apps/remix/app/components/dialogs/token-create-dialog.tsx
 msgid "You do not have permission to create a token for this team."
@@ -14486,7 +14486,7 @@ msgstr "Você não precisa mais assiná-lo."
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You failed to validate a 2FA token for the document"
-msgstr ""
+msgstr "Você não validou o código de dois fatores do documento"
 
 #: apps/remix/app/routes/_unauthenticated+/organisation.invite.$token.tsx
 msgid "You have accepted an invitation from <0>{organisationName}</0> to join their organisation."
@@ -14659,7 +14659,7 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You moved the document to team"
-msgstr ""
+msgstr "Você transferiu o documento para a equipe"
 
 #: apps/remix/app/components/dialogs/admin-organisation-delete-dialog.tsx
 #: apps/remix/app/components/dialogs/organisation-delete-dialog.tsx
@@ -14775,107 +14775,107 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You opened the document"
-msgstr ""
+msgstr "Você abriu o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You prefilled a field"
-msgstr ""
+msgstr "Você preencheu previamente um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You rejected the document"
-msgstr ""
+msgstr "Você recusou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You removed a field"
-msgstr ""
+msgstr "Você removeu um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You removed a recipient"
-msgstr ""
+msgstr "Você removeu um participante"
 
 #. placeholder {0}: data.envelopeItemTitle
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You replaced the PDF for envelope item {0}"
-msgstr ""
+msgstr "Você substituiu o PDF do documento {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You requested a 2FA token for the document"
-msgstr ""
+msgstr "Você solicitou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You requested a remote signature"
-msgstr ""
+msgstr "Você solicitou uma assinatura remota"
 
 #. placeholder {0}: data.recipientEmail
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You resent an email to {0}"
-msgstr ""
+msgstr "Você reenviou um e-mail para {0}"
 
 #. placeholder {0}: data.recipientEmail
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You sent an email to {0}"
-msgstr ""
+msgstr "Você enviou um e-mail para {0}"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You sent the document"
-msgstr ""
+msgstr "Você enviou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You signed a field"
-msgstr ""
+msgstr "Você assinou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You signed the document"
-msgstr ""
+msgstr "Você assinou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You unsigned a field"
-msgstr ""
+msgstr "Você removeu a assinatura de um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated a field"
-msgstr ""
+msgstr "Você atualizou um campo"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated a recipient"
-msgstr ""
+msgstr "Você atualizou um participante"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated an envelope item"
-msgstr ""
+msgstr "Você atualizou um documento incluído"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document"
-msgstr ""
+msgstr "Você atualizou o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document access auth requirements"
-msgstr ""
+msgstr "Você atualizou os requisitos de autenticação de acesso ao documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document external ID"
-msgstr ""
+msgstr "Você atualizou a referência externa do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document signing auth requirements"
-msgstr ""
+msgstr "Você atualizou os requisitos de autenticação da assinatura"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document title"
-msgstr ""
+msgstr "Você atualizou o título do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You updated the document visibility"
-msgstr ""
+msgstr "Você atualizou a visibilidade do documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You validated a 2FA token for the document"
-msgstr ""
+msgstr "Você validou um código de dois fatores para o documento"
 
 #: packages/lib/utils/document-audit-logs.ts
 #: packages/lib/utils/document-audit-logs.ts
 msgid "You viewed the document"
-msgstr ""
+msgstr "Você visualizou o documento"
 
 #: apps/remix/app/components/dialogs/admin-organisation-create-dialog.tsx
 msgid "You will need to configure any claims or subscription after creating this organisation"
@@ -15222,7 +15222,7 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Your remote signature was applied"
-msgstr ""
+msgstr "Sua assinatura remota foi aplicada"
 
 #: apps/remix/app/components/general/document-signing/csc-recipient-signing-in-progress-page.tsx
 msgid "Your signing authorisation expired before the signature could be applied. Please reauthorise to retry."
@@ -15238,7 +15238,7 @@ msgstr ""
 
 #: packages/lib/utils/document-audit-logs.ts
 msgid "Your signing provider authentication failed"
-msgstr ""
+msgstr "Sua autenticação no provedor de assinatura falhou"
 
 #: apps/remix/app/components/general/document-signing/csc-recipient-blocked-page.tsx
 msgid "Your signing provider does not advertise a signing algorithm this document accepts. Contact your administrator or signing provider for assistance."

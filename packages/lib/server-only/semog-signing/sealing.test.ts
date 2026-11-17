@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
+import { setupI18n } from '@lingui/core';
+import { formatter } from '@lingui/format-po';
+import { compileMessage } from '@lingui/message-utils/compileMessage';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createSemogPdfReader } from './initial-pdf';
@@ -80,6 +83,39 @@ describe('Semog native seal through decorateSemogPdf', () => {
   afterAll(() => {
     vi.restoreAllMocks();
   });
+  it('seals opted-in bridge envelopes in Portuguese without motor branding, including signature metadata', async () => {
+    const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
+    Object.assign(fixture.envelope.documentMeta, {
+      dateFormat: 'dd/MM/yyyy HH:mm:ss',
+      timezone: 'America/Fortaleza',
+    });
+    const catalog = await formatter().parse(
+      readFileSync(resolve(SEMOG_REPOSITORY_ROOT, 'packages/lib/translations/pt-BR/web.po'), 'utf8'),
+      { locale: 'pt-BR', sourceLocale: 'en', filename: 'web.po' },
+    );
+    const messages = Object.fromEntries(
+      Object.entries(catalog).map(([key, entry]) => {
+        const message = entry.translation || entry.message;
+        if (message === undefined) {
+          throw new Error(`Missing catalogue message: ${key}`);
+        }
+        return [key, compileMessage(message)];
+      }),
+    );
+    fixture.getDocumentI18n.mockImplementation(async () =>
+      setupI18n({ locale: 'pt-BR', messages: { 'pt-BR': messages } }),
+    );
+    // Neutral identity is supplied by the caller; participant/owner names remain canonical content.
+    fixture.envelope.user.name = 'Responsável demonstrativo';
+    signEveryone(fixture);
+    const { bytes } = await seal(fixture);
+    const texts = (await pageTexts(bytes)).join('');
+    expect(texts).toContain('Documentos incluídos');
+    expect(texts).toContain('Certificado de Assinatura');
+    expect(texts).not.toMatch(/Documenso|Semog|DOCUMENT_RECIPIENT_COMPLETED|\bAM\b|\bPM\b/);
+    expect(bytes.toString('latin1')).toContain('/Reason (Assinado eletronicamente)');
+    expect(bytes.toString('latin1')).not.toContain('Signed by Documenso');
+  }, 60000);
   it('completes: every field, no stamp, native reason, envelope COMPLETED with a new document', async () => {
     const fixture = await createSemogPartialSealFixture({ nativeSeal: true });
     signEveryone(fixture);

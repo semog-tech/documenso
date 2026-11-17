@@ -8,11 +8,10 @@ import { getLastPageDimensions } from '@documenso/lib/server-only/pdf/get-page-s
 import { prisma } from '@documenso/prisma';
 import { signPdf } from '@documenso/signing';
 import { PDF } from '@libpdf/core';
-import type { DocumentData, Envelope, EnvelopeItem, Field } from '@prisma/client';
+import type { DocumentData, DocumentMeta, Envelope, EnvelopeItem, Field } from '@prisma/client';
 import { DocumentStatus, EnvelopeType, RecipientRole, SigningStatus, WebhookTriggerEvents } from '@prisma/client';
 import { nanoid } from 'nanoid';
 import { groupBy } from 'remeda';
-
 import { NEXT_PRIVATE_USE_PLAYWRIGHT_PDF } from '../../../constants/app';
 import { AppError, AppErrorCode } from '../../../errors/app-error';
 import { getAuditLogsPdf } from '../../../server-only/htmltopdf/get-audit-logs-pdf';
@@ -20,6 +19,7 @@ import { getCertificatePdf } from '../../../server-only/htmltopdf/get-certificat
 import { insertFieldInPDFV1 } from '../../../server-only/pdf/insert-field-in-pdf-v1';
 import { insertFieldInPDFV2 } from '../../../server-only/pdf/insert-field-in-pdf-v2';
 import { legacy_insertFieldInPDF } from '../../../server-only/pdf/legacy-insert-field-in-pdf';
+import { isSemogPdfPtBr } from '../../../server-only/pdf/semog-pdf-ptbr';
 import { isSemogActivationManaged } from '../../../server-only/semog-signing/activation-ownership';
 import { getTeamSettings } from '../../../server-only/team/get-team-settings';
 import { triggerWebhook } from '../../../server-only/webhooks/trigger/trigger-webhook';
@@ -212,7 +212,9 @@ export const run = async ({ payload, io }: { payload: TSealDocumentJobDefinition
       }),
     );
 
-    const usePlaywrightPdf = NEXT_PRIVATE_USE_PLAYWRIGHT_PDF();
+    // The bridge presentation is implemented by the native renderers, including when
+    // the installation uses Playwright for other documents.
+    const usePlaywrightPdf = NEXT_PRIVATE_USE_PLAYWRIGHT_PDF() && !isSemogPdfPtBr(envelope.documentMeta);
 
     const needsCertificate = settings.includeSigningCertificate;
     const needsAuditLog = settings.includeAuditLog;
@@ -367,7 +369,9 @@ export const run = async ({ payload, io }: { payload: TSealDocumentJobDefinition
 };
 
 type DecorateAndSignPdfOptions = {
-  envelope: Pick<Envelope, 'id' | 'title' | 'useLegacyFieldInsertion' | 'internalVersion'>;
+  envelope: Pick<Envelope, 'id' | 'title' | 'useLegacyFieldInsertion' | 'internalVersion'> & {
+    documentMeta: Pick<DocumentMeta, 'language' | 'dateFormat'>;
+  };
   envelopeItem: EnvelopeItem & { documentData: DocumentData };
   envelopeItemFields: Field[];
   isRejected: boolean;
@@ -497,7 +501,10 @@ const decorateAndSignPdf = async ({
 
   pdfDoc = await PDF.load(await pdfDoc.save({ useXRefStream: true }));
 
-  const pdfBytes = await signPdf({ pdf: pdfDoc });
+  const pdfBytes = await signPdf({
+    pdf: pdfDoc,
+    reason: isSemogPdfPtBr(envelope.documentMeta) ? 'Assinado eletronicamente' : undefined,
+  });
 
   const { name } = path.parse(envelopeItem.title);
 

@@ -10,17 +10,16 @@ import { msg } from '@lingui/core/macro';
 import type { Field, RecipientRole, Signature } from '@prisma/client';
 import { SigningStatus } from '@prisma/client';
 import Konva from 'konva';
-import { DateTime } from 'luxon';
 import { UAParser } from 'ua-parser-js';
 import { renderSVG } from 'uqr';
 
 import { NEXT_PUBLIC_WEBAPP_URL } from '../../constants/app';
-import { APP_I18N_OPTIONS } from '../../constants/i18n';
 import { getSignatureFontFamily } from '../../constants/pdf';
 import { RECIPIENT_ROLE_SIGNING_REASONS, RECIPIENT_ROLES_DESCRIPTION } from '../../constants/recipient-roles';
 import type { TDocumentAuditLogBaseSchema } from '../../types/document-audit-logs';
 import { svgToPng } from '../../utils/images/svg-to-png';
 import { ensureFontLibrary } from './helpers';
+import { formatPdfDate, semogPdfAtivo } from './semog-pdf-ptbr';
 
 type ColumnWidths = [number, number, number];
 
@@ -219,7 +218,7 @@ const renderColumnOne = (options: RenderColumnOptions) => {
   const textFontStyling = {
     x: 0,
     fontFamily: 'Inter',
-    wrap: 'char',
+    wrap: semogPdfAtivo(i18n) ? 'word' : 'char',
     lineHeight: 1.2,
     fill: textMutedForeground,
     width: width - columnPadding,
@@ -243,6 +242,13 @@ const renderColumnOne = (options: RenderColumnOptions) => {
     fontSize: textBase,
     ...textFontStyling,
   });
+
+  if (semogPdfAtivo(i18n)) {
+    emailText.wrap('none');
+    emailText.fontSize(
+      Math.min(textBase, (0.98 * textBase * emailText.width()) / emailText.measureSize(recipient.email).width),
+    );
+  }
 
   columnGroup.add(emailText);
 
@@ -406,7 +412,7 @@ const renderColumnTwo = (options: RenderColumnOptions) => {
 
   const deviceLabelAndText = renderLabelAndText({
     label: i18n._(msg`Device`),
-    text: getDevice(relevantLog?.userAgent),
+    text: semogPdfAtivo(i18n) && !relevantLog?.userAgent ? i18n._(msg`Unknown`) : getDevice(relevantLog?.userAgent),
     width,
     y: column.getClientRect().height + 6,
   });
@@ -432,31 +438,21 @@ const renderColumnThree = (options: RenderColumnOptions) => {
     {
       label: i18n._(msg`Sent`),
       value: recipient.logs.emailed
-        ? DateTime.fromJSDate(recipient.logs.emailed.createdAt)
-            .setLocale(APP_I18N_OPTIONS.defaultLocale)
-            .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)')
+        ? formatPdfDate(recipient.logs.emailed.createdAt, i18n)
         : recipient.logs.sent
-          ? DateTime.fromJSDate(recipient.logs.sent.createdAt)
-              .setLocale(APP_I18N_OPTIONS.defaultLocale)
-              .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)')
+          ? formatPdfDate(recipient.logs.sent.createdAt, i18n)
           : i18n._(msg`Unknown`),
     },
     {
       label: i18n._(msg`Viewed`),
-      value: recipient.logs.opened
-        ? DateTime.fromJSDate(recipient.logs.opened.createdAt)
-            .setLocale(APP_I18N_OPTIONS.defaultLocale)
-            .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)')
-        : i18n._(msg`Unknown`),
+      value: recipient.logs.opened ? formatPdfDate(recipient.logs.opened.createdAt, i18n) : i18n._(msg`Unknown`),
     },
   ];
 
   if (recipient.logs.rejected) {
     itemsToRender.push({
       label: i18n._(msg`Rejected`),
-      value: DateTime.fromJSDate(recipient.logs.rejected.createdAt)
-        .setLocale(APP_I18N_OPTIONS.defaultLocale)
-        .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)'),
+      value: formatPdfDate(recipient.logs.rejected.createdAt, i18n),
       labelFill: textRejectedRed,
       valueFill: textRejectedRed,
     });
@@ -471,11 +467,7 @@ const renderColumnThree = (options: RenderColumnOptions) => {
   } else {
     itemsToRender.push({
       label: i18n._(msg`Signed`),
-      value: recipient.logs.completed
-        ? DateTime.fromJSDate(recipient.logs.completed.createdAt)
-            .setLocale(APP_I18N_OPTIONS.defaultLocale)
-            .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)')
-        : i18n._(msg`Unknown`),
+      value: recipient.logs.completed ? formatPdfDate(recipient.logs.completed.createdAt, i18n) : i18n._(msg`Unknown`),
     });
   }
 

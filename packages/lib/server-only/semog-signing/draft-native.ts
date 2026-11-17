@@ -44,7 +44,8 @@ const createDocument = async (
           create: {
             distributionMethod: DocumentDistributionMethod.NONE,
             language: 'pt-BR',
-            timezone: 'America/Sao_Paulo',
+            timezone: 'America/Fortaleza',
+            dateFormat: 'dd/MM/yyyy HH:mm:ss',
             signingOrder:
               input.ordemAssinatura === 'sequencial' ? DocumentSigningOrder.SEQUENTIAL : DocumentSigningOrder.PARALLEL,
           },

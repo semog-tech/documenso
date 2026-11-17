@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { AppError, AppErrorCode } from '../../errors/app-error';
 import { ZDocumentAuditLogEventDocumentCompletedSchema } from '../../types/document-audit-logs';
 import { insertFieldInPDFV2 } from '../pdf/insert-field-in-pdf-v2';
+import { isSemogPdfPtBr } from '../pdf/semog-pdf-ptbr';
 import type { SemogDocumentI18n } from './document-pages';
 import { renderSemogDocumentPages } from './document-pages';
 import type { SemogPrismaTransactionRunner } from './execution';
@@ -301,6 +302,7 @@ const createItemPdf = async (
     signer,
     rejectionFont: rejected ? (dependencies.rejectionFont ?? null) : null,
     documentPages,
+    reason: isSemogPdfPtBr(envelope.documentMeta) ? 'Assinado eletronicamente' : undefined,
   });
 };
 const persistSealedItems = async (
