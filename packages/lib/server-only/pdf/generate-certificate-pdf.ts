@@ -1,5 +1,5 @@
 import { PDF } from '@libpdf/core';
-import { i18n } from '@lingui/core';
+import { setupI18n } from '@lingui/core';
 import { msg } from '@lingui/core/macro';
 import type { DocumentMeta, Envelope, Field, Recipient, Signature } from '@prisma/client';
 import { FieldType } from '@prisma/client';
@@ -13,6 +13,7 @@ import { getTranslations } from '../../utils/i18n';
 import { getDocumentCertificateAuditLogs } from '../document/get-document-certificate-audit-logs';
 import { getOrganisationClaimByTeamId } from '../organisation/get-organisation-claims';
 import { renderCertificate } from './render-certificate';
+import { isSemogPdfPtBr, semogPdfI18n } from './semog-pdf-ptbr';
 
 export type GenerateCertificatePdfOptions = {
   /**
@@ -41,7 +42,8 @@ export type GenerateCertificatePdfOptions = {
 export const generateCertificatePdf = async (options: GenerateCertificatePdfOptions) => {
   const { envelope, envelopeOwner, recipients, fields, language, pageWidth, pageHeight } = options;
 
-  const documentLanguage = ZSupportedLanguageCodeSchema.parse(language);
+  const semogPtBr = isSemogPdfPtBr(envelope.documentMeta);
+  const documentLanguage = ZSupportedLanguageCodeSchema.parse(semogPtBr ? 'pt-BR' : language);
 
   const [organisationClaim, auditLogs, messages] = await Promise.all([
     getOrganisationClaimByTeamId({ teamId: envelope.teamId }),
@@ -51,10 +53,7 @@ export const generateCertificatePdf = async (options: GenerateCertificatePdfOpti
     getTranslations(documentLanguage),
   ]);
 
-  i18n.loadAndActivate({
-    locale: documentLanguage,
-    messages,
-  });
+  const i18n = setupI18n({ locale: documentLanguage, messages: { [documentLanguage]: messages } });
 
   const payload = {
     recipients: recipients.map((recipient) => {
@@ -138,10 +137,10 @@ export const generateCertificatePdf = async (options: GenerateCertificatePdfOpti
     envelopeOwner,
     envelopeId: envelope.id,
     qrToken: envelope.qrToken,
-    hidePoweredBy: organisationClaim.flags.hidePoweredBy ?? false,
+    hidePoweredBy: semogPtBr || (organisationClaim.flags.hidePoweredBy ?? false),
     pageWidth,
     pageHeight,
-    i18n,
+    i18n: semogPtBr ? semogPdfI18n(i18n) : i18n,
   };
 
   const certificatePages = await renderCertificate(payload);

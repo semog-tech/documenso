@@ -13,6 +13,7 @@ import { createLocalSigner } from './transports/local';
 
 export type SignOptions = {
   pdf: PDF;
+  reason?: string;
 };
 
 let signer: Signer | null = null;
@@ -35,14 +36,14 @@ const getSigner = async () => {
   return signer;
 };
 
-export const signPdf = async ({ pdf }: SignOptions) => {
+export const signPdf = async ({ pdf, reason }: SignOptions) => {
   const signer = await getSigner();
 
   const tsa = getTimestampAuthority();
 
   const { bytes } = await pdf.sign({
     signer,
-    reason: 'Signed by Documenso',
+    reason: reason ?? 'Signed by Documenso',
     location: NEXT_PUBLIC_WEBAPP_URL(),
     contactInfo: NEXT_PUBLIC_SIGNING_CONTACT_INFO(),
     subFilter: NEXT_PRIVATE_USE_LEGACY_SIGNING_SUBFILTER() ? 'adbe.pkcs7.detached' : 'ETSI.CAdES.detached',

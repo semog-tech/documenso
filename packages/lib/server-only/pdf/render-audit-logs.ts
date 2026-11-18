@@ -21,6 +21,7 @@ import type { TDocumentAuditLog } from '../../types/document-audit-logs';
 import { DOCUMENT_AUDIT_LOG_TYPE } from '../../types/document-audit-logs';
 import { formatDocumentAuditLogAction } from '../../utils/document-audit-logs';
 import { ensureFontLibrary } from './helpers';
+import { eventoSemogPtBr, fitPdfWords, formatPdfDate, pdfDocumentIdLabel, semogPdfAtivo } from './semog-pdf-ptbr';
 
 export type AuditLogRecipient = {
   id: number;
@@ -66,6 +67,7 @@ type RenderOverviewCardLabelAndTextOptions = {
   label: string;
   text: string | string[];
   width: number;
+  semogPtBr?: boolean;
   groupX?: number;
 };
 
@@ -94,28 +96,34 @@ const renderOverviewCardLabels = (options: RenderOverviewCardLabelAndTextOptions
     const value = new Konva.Text({
       x: 0,
       y: label.height() + labelYSpacing,
-      width: width - label.width(),
+      width: options.semogPtBr ? width : width - label.width(),
       fontFamily: 'Inter',
       text,
       fill: textForeground,
-      wrap: 'char',
+      wrap: options.semogPtBr ? 'word' : 'char',
       fontSize: textSm,
     });
 
+    if (options.semogPtBr) {
+      fitPdfWords(value);
+    }
     group.add(value);
   } else {
     for (const textValue of text) {
       const value = new Konva.Text({
         x: 0,
         y: group.getClientRect().height + 4,
-        width: width - label.width(),
+        width: options.semogPtBr ? width : width - label.width(),
         fontFamily: 'Inter',
         text: '• ' + textValue,
         fill: textForeground,
-        wrap: 'char',
+        wrap: options.semogPtBr ? 'word' : 'char',
         fontSize: textSm,
       });
 
+      if (options.semogPtBr) {
+        fitPdfWords(value);
+      }
       group.add(value);
     }
   }
@@ -131,6 +139,7 @@ type RenderVerticalLabelAndTextOptions = {
   x?: number;
   y?: number;
   textFontFamily?: string;
+  isUnbroken?: boolean;
 };
 
 const renderVerticalLabelAndText = (options: RenderVerticalLabelAndTextOptions) => {
@@ -161,6 +170,11 @@ const renderVerticalLabelAndText = (options: RenderVerticalLabelAndTextOptions) 
     fontSize: textXs,
     fill: textForeground,
   });
+
+  if (options.isUnbroken) {
+    konvaText.wrap('none');
+    konvaText.fontSize(Math.min(textXs, (0.98 * textXs * konvaText.width()) / konvaText.measureSize(text).width));
+  }
 
   group.add(konvaText);
 
@@ -197,11 +211,13 @@ const renderOverviewCard = (options: RenderOverviewCardOptions) => {
   });
 
   const envelopeIdLabel = renderOverviewCardLabels({
-    label: i18n._(msg`Envelope ID`),
+    semogPtBr: semogPdfAtivo(i18n),
+    label: pdfDocumentIdLabel(i18n),
     text: envelope.id,
     width: columnWidth,
   });
   const ownerLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Owner`),
     text: `${envelopeOwner.name} (${envelopeOwner.email})`,
     width: columnWidth,
@@ -218,11 +234,13 @@ const renderOverviewCard = (options: RenderOverviewCardOptions) => {
   });
 
   const statusLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Status`),
     text: i18n._(envelope.deletedAt ? msg`Deleted` : DOCUMENT_STATUS[envelope.status].description).toUpperCase(),
     width: columnWidth,
   });
   const timeZoneLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Time Zone`),
     text: envelope.documentMeta?.timezone || 'N/A',
     width: columnWidth,
@@ -239,17 +257,15 @@ const renderOverviewCard = (options: RenderOverviewCardOptions) => {
   });
 
   const createdAtLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Created At`),
-    text: DateTime.fromJSDate(envelope.createdAt)
-      .setLocale(APP_I18N_OPTIONS.defaultLocale)
-      .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)'),
+    text: formatPdfDate(envelope.createdAt, i18n),
     width: columnWidth,
   });
   const lastUpdatedLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Last Updated`),
-    text: DateTime.fromJSDate(envelope.updatedAt)
-      .setLocale(APP_I18N_OPTIONS.defaultLocale)
-      .toFormat('yyyy-MM-dd hh:mm:ss a (ZZZZ)'),
+    text: formatPdfDate(envelope.updatedAt, i18n),
     width: columnWidth,
     groupX: columnWidth + columnSpacing,
   });
@@ -264,12 +280,14 @@ const renderOverviewCard = (options: RenderOverviewCardOptions) => {
   });
 
   const enclosedDocumentsLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Enclosed Documents`),
     text: envelopeItems,
     width: columnWidth,
   });
 
   const recipientsLabel = renderOverviewCardLabels({
+    semogPtBr: semogPdfAtivo(i18n),
     label: i18n._(msg`Recipients`),
     text: recipients.map(
       (recipient) =>
@@ -330,7 +348,7 @@ const renderRow = (options: RenderRowOptions) => {
     x: indicatorWidth + indicatorPaddingRight,
     y: 0,
     width: columnWidth - indicatorWidth - indicatorPaddingRight,
-    text: auditLog.type.replace(/_/g, ' '),
+    text: semogPdfAtivo(i18n) ? eventoSemogPtBr(auditLog.type) : auditLog.type.replace(/_/g, ' '),
     fontFamily: 'Inter',
     fontSize: textSm,
     fontStyle: fontMedium,
@@ -347,10 +365,17 @@ const renderRow = (options: RenderRowOptions) => {
     fill: textForeground,
   });
 
+  if (semogPdfAtivo(i18n)) {
+    auditLogDescriptionText.wrap('word');
+    fitPdfWords(auditLogDescriptionText);
+  }
+
   const auditLogTimestampText = new Konva.Text({
     x: columnWidth + columnSpacing,
     width: columnWidth,
-    text: DateTime.fromJSDate(auditLog.createdAt).setLocale(APP_I18N_OPTIONS.defaultLocale).toLocaleString(dateFormat),
+    text: semogPdfAtivo(i18n)
+      ? formatPdfDate(auditLog.createdAt, i18n)
+      : DateTime.fromJSDate(auditLog.createdAt).setLocale(APP_I18N_OPTIONS.defaultLocale).toLocaleString(dateFormat),
     fontFamily: 'Inter',
     align: 'right',
     fontSize: textSm,
@@ -389,6 +414,7 @@ const renderRow = (options: RenderRowOptions) => {
   const userLabel = renderVerticalLabelAndText({
     label: i18n._(msg`User`).toUpperCase(),
     text: auditLog.email || 'N/A',
+    isUnbroken: semogPdfAtivo(i18n),
     align: 'left',
     width: columnWidth,
     textFontFamily: 'ui-monospace',
@@ -525,7 +551,7 @@ const renderPages = (options: RenderPagesOptions) => {
       y: 0,
       height: pageTopMargin,
       verticalAlign: 'middle',
-      text: i18n._(msg`Audit Log`),
+      text: semogPdfAtivo(i18n) ? 'Registro de auditoria' : i18n._(msg`Audit Log`),
       fill: textForeground,
       fontFamily: 'Inter',
       fontSize: titleFontSize,
@@ -621,7 +647,7 @@ export async function renderAuditLogs({
     const footerText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelope.id}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelope.id}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,
@@ -666,7 +692,7 @@ export async function renderAuditLogs({
     const overflowFooterText = new Konva.Text({
       x: margin,
       y: pageHeight - textXs - 10,
-      text: `${i18n._(msg`Envelope ID`)}: ${envelope.id}`,
+      text: `${pdfDocumentIdLabel(i18n)}: ${envelope.id}`,
       fontFamily: 'Inter',
       fontSize: textXs,
       fill: textMutedForegroundLight,

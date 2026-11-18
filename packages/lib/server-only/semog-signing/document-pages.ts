@@ -11,6 +11,7 @@ import { extractDocumentAuthMethods } from '../../utils/document-auth';
 import { renderAuditLogs } from '../pdf/render-audit-logs';
 import type { CertificateRecipient } from '../pdf/render-certificate';
 import { renderCertificate } from '../pdf/render-certificate';
+import { isSemogPdfPtBr, semogPdfI18n } from '../pdf/semog-pdf-ptbr';
 import {
   type SemogAuthenticationEvidence,
   semogAuthenticationLabel,
@@ -140,10 +141,10 @@ export const renderSemogDocumentPages = async (
   const { logs, channels, hidePoweredBy } = await readPageEvidence(tx, envelope);
   const common = {
     envelopeOwner: { email: envelope.user.email, name: envelope.user.name ?? '' },
-    hidePoweredBy,
+    hidePoweredBy: isSemogPdfPtBr(envelope.documentMeta) || hidePoweredBy,
     pageWidth: dimensions.width,
     pageHeight: dimensions.height,
-    i18n,
+    i18n: isSemogPdfPtBr(envelope.documentMeta) ? semogPdfI18n(i18n) : i18n,
   };
   const certificate = await renderCertificate({
     ...common,

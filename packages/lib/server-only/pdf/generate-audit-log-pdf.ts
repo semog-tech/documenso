@@ -1,7 +1,7 @@
 import type { TDocumentAuditLog } from '@documenso/lib/types/document-audit-logs';
 import { prisma } from '@documenso/prisma';
 import { PDF } from '@libpdf/core';
-import { i18n } from '@lingui/core';
+import { setupI18n } from '@lingui/core';
 
 import { ZSupportedLanguageCodeSchema } from '../../constants/i18n';
 import { parseDocumentAuditLogData } from '../../utils/document-audit-logs';
@@ -9,6 +9,7 @@ import { getTranslations } from '../../utils/i18n';
 import { getOrganisationClaimByTeamId } from '../organisation/get-organisation-claims';
 import type { GenerateCertificatePdfOptions } from './generate-certificate-pdf';
 import { renderAuditLogs } from './render-audit-logs';
+import { isSemogPdfPtBr, semogPdfI18n } from './semog-pdf-ptbr';
 
 type GenerateAuditLogPdfOptions = GenerateCertificatePdfOptions & {
   envelopeItems: string[];
@@ -27,7 +28,8 @@ export const generateAuditLogPdf = async (options: GenerateAuditLogPdfOptions) =
     additionalAuditLogs = [],
   } = options;
 
-  const documentLanguage = ZSupportedLanguageCodeSchema.parse(language);
+  const semogPtBr = isSemogPdfPtBr(envelope.documentMeta);
+  const documentLanguage = ZSupportedLanguageCodeSchema.parse(semogPtBr ? 'pt-BR' : language);
 
   const [organisationClaim, partialAuditLogs, messages] = await Promise.all([
     getOrganisationClaimByTeamId({ teamId: envelope.teamId }),
@@ -35,10 +37,7 @@ export const generateAuditLogPdf = async (options: GenerateAuditLogPdfOptions) =
     getTranslations(documentLanguage),
   ]);
 
-  i18n.loadAndActivate({
-    locale: documentLanguage,
-    messages,
-  });
+  const i18n = setupI18n({ locale: documentLanguage, messages: { [documentLanguage]: messages } });
 
   const auditLogs: TDocumentAuditLog[] = [...additionalAuditLogs, ...partialAuditLogs];
 
@@ -48,10 +47,10 @@ export const generateAuditLogPdf = async (options: GenerateAuditLogPdfOptions) =
     envelopeItems,
     recipients,
     auditLogs,
-    hidePoweredBy: organisationClaim.flags.hidePoweredBy ?? false,
+    hidePoweredBy: semogPtBr || (organisationClaim.flags.hidePoweredBy ?? false),
     pageWidth,
     pageHeight,
-    i18n,
+    i18n: semogPtBr ? semogPdfI18n(i18n) : i18n,
   });
 
   return await PDF.merge(auditLogPages, {
