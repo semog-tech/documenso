@@ -57,3 +57,69 @@
 - Use `(params: Route.Params)` and `(loaderData: Route.LoaderData)` for routes
 - Directly return data from loaders, don't use `json()`
 - Use `superLoaderJson` when sending complex data through loaders such as dates or prisma decimals
+
+## Fork Semog
+
+Este repositório é o fork da Semog (`sign.semog.com.br`), motor das assinaturas do semogapp.
+Tudo acima desta seção, `.agents/skills/` e `.cursorrules` vêm do upstream: não reescreva, para
+não criar conflito a cada sincronização. Instruções da Semog ficam só nesta seção.
+
+**Branches.** Produção é `leandrosemog/documenso-2.18` (tag upstream `v2.18.0` + commits
+Semog). `main` é espelho antigo do upstream e não recebe trabalho Semog. Abra PR sempre contra
+`leandrosemog/documenso-2.18`: PR contra `main` dispara a CI pesada do upstream. O título
+segue Conventional Commits (`Validate PR Name`), com escopo `semog`: `fix(semog): ...`.
+
+**O que a Semog mudou.**
+
+- A ponte `/api/semog/v1/*` (rascunho, ativação, inscrições, manifestações, selo parcial,
+  prorrogação, contato, cancelamento): `packages/lib/server-only/semog-signing/`, montada por
+  `apps/remix/server/semog-signing-host.ts` e `semog-signing-routes.ts`. Desligada sem
+  `SEMOG_SIGNING_ENABLED` e `SEMOG_SIGNING_WORKER_ENABLED`.
+- A guarda `semog_bridge.guard_native_mutation()` e o schema `semog_bridge`, em `db/*.sql`
+  (cada um com `.down.sql`), aplicados à mão no banco do Documenso, fora do Prisma. A guarda
+  recusa mutação nativa (editar, cancelar, assinar pela rota nativa) em envelope com inscrição
+  ativa e se desarma quando todas as inscrições são revogadas.
+- Jobs nativos (lembrete, expiração, varredura de selagem) pulam envelopes da ponte
+  (`activation-ownership.ts`); certificado e auditoria em pt-BR (`semog-pdf-ptbr.ts`);
+  idioma do documento, fonte Saira e tema claro na página do destinatário.
+
+O cliente da ponte no semogapp é `server/documenso/` (`ponteAssinatura.ts`,
+`envelopeRascunho.ts`, `envelopeAtivacao.ts`), com contrato em
+`docs/documenso/ponte-assinatura-semog.md` daquele repositório. Mudou contrato aqui, mude lá.
+
+**Verificação** (o mesmo que `.github/workflows/semog-check.yml` roda; Node 24, npm, sem pnpm):
+
+```bash
+npm ci && npm run prisma:generate --workspace @documenso/prisma
+node node_modules/@biomejs/biome/bin/biome check packages/lib/server-only/semog-signing apps/remix/server/semog-signing-host.ts apps/remix/server/semog-signing-routes.ts
+node node_modules/typescript/bin/tsc --noEmit -p tsconfig.semog-signing.json
+node node_modules/vitest/vitest.mjs run --config packages/lib/vitest.config.ts packages/lib/server-only/semog-signing
+node --test apps/remix/app/utils/semog-recipient.test.mjs apps/remix/app/utils/recipient-remark.test.mjs apps/remix/app/utils/remark-page.test.mjs packages/lib/client-only/hooks/load-signature-font.test.mjs
+# contra PostgreSQL real, fora da CI (os testes acima são mocks):
+SEMOG_PG_BIN=/opt/homebrew/bin node node_modules/vite-node/vite-node.mjs --config packages/lib/vitest.config.ts scripts/semog-signing-rounds-local.ts
+```
+
+**Guarda.** Operação nova que muda envelope inscrito segue o padrão durável: recibo com
+`transacao xid8`, `set_config('semog_bridge.<x>_key')` e um ramo estreito na guarda (como
+`contact_allows`, `extension_allows`, `cancel_allows`). Toda migração nova recria a guarda
+inteira, então o ensaio dos ramos antigos precisa da guarda da migração mais recente. A
+ordem de aplicação e os pré-requisitos estão em `docs/semog-signing-host.md`.
+
+**Deploy.** O merge em `leandrosemog/documenso-2.18` roda os checks e publica
+`ghcr.io/semog-tech/documenso:sha-<commit>`, mesmo para mudança só de docs; não faz deploy.
+No droplet (`ssh semog`), `/opt/documenso/docker-compose.yml` fixa a imagem por digest:
+antes de trocar, faça backup do banco (`documenso-documenso-db-1`, em
+`/opt/documenso/backups/`) e confira `select estado, count(*) from semog_bridge.outbox
+group by 1` sem pendentes; depois troque o digest e rode `docker compose up -d documenso`. A
+imagem roda `prisma migrate deploy` ao subir. O contêiner não publica porta: a saúde se
+confere com `curlimages/curl` na rede `shared-network` contra
+`http://documenso-documenso-1:3000/api/health`.
+
+**Sincronizar com o upstream.** Crie uma branch a partir da tag oficial nova, faça
+`git merge --no-ff` da branch de produção (merge, não rebase, para preservar o histórico dos
+patches) e resolva conflitos mantendo as novidades do upstream. Antes da troca, restaure um
+dump do banco num Postgres descartável e ensaie as migrações Prisma novas junto da guarda:
+migração upstream que mexe nas tabelas vigiadas por ela (`Envelope`, `EnvelopeItem`,
+`Recipient`, `Field`, `Signature`, `DocumentData`, `DocumentMeta`, `EnvelopeAttachment`) pode
+colidir com a guarda. Rode a verificação acima e o ensaio contra Postgres. O registro da atualização para a
+2.18 está em `docs/superpowers/plans/2026-09-09-documenso-2.18.md`.
